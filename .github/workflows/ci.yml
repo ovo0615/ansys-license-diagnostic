@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  release-check:
+    name: 發布前檢查（禁止入庫的檔案／客戶識別資訊／編碼）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: python tools/check_release.py
+        run: python tools/check_release.py
+
+  powershell-syntax:
+    name: PowerShell 語法檢查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 解析所有 .ps1
+        shell: pwsh
+        run: |
+          $fail = $false
+          foreach ($f in (git ls-files '*.ps1')) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs.Count) {
+              Write-Host "FAIL $f"
+              $errs | Select-Object -First 5 | ForEach-Object {
+                Write-Host ("  L" + $_.Extent.StartLineNumber + ": " + $_.Message)
+              }
+              $fail = $true
+            } else {
+              Write-Host "ok   $f"
+            }
+          }
+          if ($fail) { exit 1 }
+
+  python-compile:
+    name: Python 編譯檢查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: 編譯所有 .py
+        run: |
+          set -e
+          files=$(git ls-files '*.py' || true)
+          if [ -z "$files" ]; then echo "沒有 Python 檔案，略過"; exit 0; fi
+          python -m py_compile $files
+          echo "OK"
+
+  no-secrets:
+    name: 憑證型檔案
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 拒絕 .env / 金鑰檔
+        run: |
+          set -e
+          m=$(git ls-files | grep -E '(^|/)\.env(\..*)?$|\.pem$|\.key$|id_rsa' || true)
+          if [ -n "$m" ]; then
+            echo "以下檔案不得入庫："
+            echo "$m"
+            exit 1
+          fi
+          echo "OK"

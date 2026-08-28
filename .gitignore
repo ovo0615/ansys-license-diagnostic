@@ -39,3 +39,7 @@ desktop.ini
 *.tmp
 __pycache__/
 *.pyc
+
+# Ansys 原廠專有資料，不得公開發布
+# 由 tools/parse_feature_map.py 從自己的 Product to License Increment Mapping PDF 產生
+feature_map.json

@@ -22,10 +22,16 @@
     預期組態／基線檔（JSON）。有的話會做符合性與變更比對，結論會銳利很多。
     預設自動尋找腳本旁的 expected.json。
 
+.PARAMETER Product
+    使用者打不開的產品名稱，可多個。例：-Product HFSS
+    工具會查對照表找出該產品需要的所有 increment，逐一比對伺服器上是否存在、是否用完，
+    並挑鑑別度最高的幾項做實際取得測試。
+    這是最好用的參數——使用者只會說「HFSS 打不開」，不會說 feature 名稱。
+
 .PARAMETER Feature
-    要實際測試取得授權的 FlexNet feature 名稱，可多個。
+    要實際測試取得授權的 FlexNet feature（increment）名稱，可多個。
     例：-Feature ansys,anshpc
-    未指定時不做 checkout 測試（見 -NoCheckout）。
+    已經知道 feature 名稱時才用；一般情況用 -Product 即可。
 
 .PARAMETER SaveBaseline
     裝機驗收時使用。把當下的正確狀態存成基線檔，供日後故障時比對。
@@ -69,6 +75,7 @@
 param(
     [string]   $CaseId,
     [string]   $Expected,
+    [string[]] $Product,
     [string[]] $Feature,
     [string[]] $Server,
     [switch]   $SaveBaseline,
@@ -102,6 +109,75 @@ $LEVEL_META = [ordered]@{
     'MANUAL'    = @{ Label = '需人工' ; Rank = 2; Color = '#6b5bd6' }
     'OK'        = @{ Label = '正常'   ; Rank = 3; Color = '#107c10' }
     'INFO'      = @{ Label = '參考'   ; Rank = 4; Color = '#5a6270' }
+}
+
+# ----------------------------------------------------------------------------
+#  產品 -> increment 對照表（feature_map.json，選用）
+#  由 Ansys 原廠的 Product to License Increment Mapping 文件轉換而成。
+#  沒有這個檔案時 -Product 無法使用，但其餘功能不受影響。
+# ----------------------------------------------------------------------------
+$script:FeatureMap = $null
+$featureMapPath = Join-Path $ScriptDir 'feature_map.json'
+if (Test-Path -LiteralPath $featureMapPath) {
+    try {
+        $script:FeatureMap = Get-Content -LiteralPath $featureMapPath -Raw -Encoding UTF8 |
+                             ConvertFrom-Json
+    } catch {
+        $script:FeatureMap = $null
+    }
+}
+
+function Find-ProductEntry {
+    <#
+        依使用者輸入的產品名找出對照表中的候選項目。
+
+        重點：不要在第一個規則命中就短路回傳。同一個產品在對照表裡常有新舊兩種名稱，
+        而且內容差很多——例如「Ansys HFSS」（legacy）用 hfss_solve，
+        「Ansys Electronics Premium HFSS」（commercial）用 elec_solve_hfss，
+        14 項與 11 項之中只有 5 項相同。挑錯邊會給出完全錯誤的診斷。
+
+        所以這裡回傳「所有」候選，依精確度排序，由呼叫端逐一比對後用證據決定是哪一個。
+    #>
+    param([string] $Query)
+    if ($null -eq $script:FeatureMap) { return @() }
+
+    $names = @($script:FeatureMap.products.PSObject.Properties.Name)
+    $q = $Query.Trim()
+    if (-not $q) { return @() }
+
+    $esc     = [regex]::Escape($q)
+    $ranked  = New-Object System.Collections.Generic.List[object]
+    $seenNm  = @{}
+
+    function Add-Cand {
+        param([string] $Name, [int] $Rank)
+        if ($seenNm.ContainsKey($Name.ToLower())) { return }
+        $seenNm[$Name.ToLower()] = $true
+        $ranked.Add([pscustomobject]@{ Name = $Name; Rank = $Rank }) | Out-Null
+    }
+
+    foreach ($n in $names) { if ($n -ieq $q)               { Add-Cand -Name $n -Rank 0 } }
+    foreach ($n in $names) { if ($n -ieq ('Ansys ' + $q))  { Add-Cand -Name $n -Rank 1 } }
+    foreach ($n in $names) { if ($n -imatch ('(^|\s)' + $esc + '($|\s)')) { Add-Cand -Name $n -Rank 2 } }
+
+    $words = @($q -split '\s+' | Where-Object { $_ })
+    if ($words.Count -gt 0) {
+        foreach ($n in $names) {
+            $all = $true
+            foreach ($w in $words) { if ($n -inotmatch [regex]::Escape($w)) { $all = $false } }
+            if ($all) { Add-Cand -Name $n -Rank 3 }
+        }
+    }
+
+    return @($ranked | Sort-Object Rank, Name | ForEach-Object { $_.Name })
+}
+
+function Get-IncrementInfo {
+    param([string] $Name)
+    if ($null -eq $script:FeatureMap) { return $null }
+    $p = $script:FeatureMap.increments.PSObject.Properties[$Name]
+    if ($null -eq $p) { return $null }
+    return $p.Value
 }
 
 function Add-Finding {
@@ -805,15 +881,178 @@ if (-not $connOk) {
         Add-Row $sec3 'lmstat -a 查詢失敗或逾時。'
     }
 
+    # --- 產品比對：把「HFSS 打不開」翻成 increment 再逐一比對 ---
+    $checkoutList = New-Object System.Collections.Generic.List[string]
+    if ($Feature) {
+        foreach ($f in $Feature) { if ($f.Trim()) { $checkoutList.Add($f.Trim()) | Out-Null } }
+    }
+
+    if ($Product -and $Product.Count -gt 0) {
+        Add-Row $sec3 ''
+        Add-Row $sec3 '【產品所需 increment 比對】'
+        if ($null -eq $script:FeatureMap) {
+            Add-Row $sec3 '  找不到 feature_map.json，無法進行產品比對。'
+            Add-Finding -Level 'MANUAL' -Title '缺少產品對照表 feature_map.json' `
+                -Detail '指定了 -Product 但工具目錄下沒有 feature_map.json，無法把產品名稱翻成 increment。' `
+                -Fix '請向技術支援索取完整的工具包（應包含 feature_map.json）。'
+        } else {
+            $mapDate = $script:FeatureMap.referenceDate
+            Add-Row $sec3 ('  對照表版本：' + $mapDate)
+            foreach ($prodQuery in $Product) {
+                $matches3 = Find-ProductEntry -Query $prodQuery
+                Add-Row $sec3 ''
+                if ($matches3.Count -eq 0) {
+                    Add-Row $sec3 ('  「' + $prodQuery + '」：對照表中找不到')
+                    Add-Finding -Level 'MANUAL' -Title ('對照表中找不到產品：' + $prodQuery) `
+                        -Detail ('無法把「' + $prodQuery + '」對應到任何 Ansys 產品。' + [Environment]::NewLine +
+                                 '可能是名稱拼法不同，或該產品不在對照表版本 ' + $mapDate + ' 的範圍內。') `
+                        -Fix ('請改用完整產品名稱（例如 "Ansys HFSS"），或直接用 -Feature 指定 increment 名稱。')
+                    continue
+                }
+                # 逐一比對每個候選，最後用證據挑出客戶實際擁有的那一個。
+                # 這裡不能靠名稱猜——同一個產品的新舊名稱內容差很多。
+                $cands = @($matches3 | Select-Object -First 6)
+                $results = New-Object System.Collections.Generic.List[object]
+                $order = 0
+
+                foreach ($pname in $cands) {
+                    $entry = $script:FeatureMap.products.PSObject.Properties[$pname].Value
+                    $incs  = @($entry.increments)
+
+                    $missing   = New-Object System.Collections.Generic.List[string]
+                    $exhausted = New-Object System.Collections.Generic.List[string]
+                    $ok        = 0
+
+                    foreach ($inc in $incs) {
+                        $n = $inc.name
+                        if (-not $featureTable.ContainsKey($n)) {
+                            $missing.Add($n) | Out-Null
+                        } else {
+                            $ft = $featureTable[$n]
+                            if ($ft.Issued -gt 0 -and $ft.InUse -ge $ft.Issued) {
+                                $exhausted.Add($n) | Out-Null
+                            } else {
+                                $ok++
+                            }
+                        }
+                    }
+                    $results.Add([pscustomobject]@{
+                        Name = $pname; Category = $entry.category; Incs = $incs
+                        Missing = $missing; Exhausted = $exhausted; Ok = $ok
+                        Order = $order
+                    }) | Out-Null
+                    $order++
+                }
+
+                # 客戶實際擁有的產品，缺少的項目一定最少。用這個當判準。
+                # 平手時（例如客戶的授權涵蓋所有候選）再用 Order 決定，Order 來自
+                # Find-ProductEntry 的精確度排序。Sort-Object 不保證穩定排序，
+                # 沒有這個 tie-break 的話同樣的輸入可能挑到不同產品。
+                $best = @($results | Sort-Object @{E={$_.Missing.Count}}, @{E={$_.Exhausted.Count}},
+                                                 @{E={$_.Order}})[0]
+
+                if ($results.Count -gt 1) {
+                    Add-Row $sec3 ('  「' + $prodQuery + '」符合 ' + $results.Count + ' 個產品名稱，逐一比對後判定為：')
+                    foreach ($r in $results) {
+                        $mark = '   '
+                        if ($r.Name -eq $best.Name) { $mark = ' > ' }
+                        Add-Row $sec3 ('  ' + $mark + $r.Name.PadRight(42) + '(' + $r.Category +
+                                       ') 缺 ' + $r.Missing.Count + ' / 用完 ' + $r.Exhausted.Count +
+                                       ' / 可用 ' + $r.Ok)
+                    }
+                    Add-Row $sec3 ''
+                }
+
+                $entry = $script:FeatureMap.products.PSObject.Properties[$best.Name].Value
+                $incs  = @($best.Incs)
+                Add-Row $sec3 ('  ' + $best.Name + '  （' + $best.Category + '，需要 ' + $incs.Count + ' 個 increment）')
+                foreach ($inc in $incs) {
+                    $n = $inc.name
+                    if (-not $featureTable.ContainsKey($n)) {
+                        Add-Row $sec3 ('      ' + $n.PadRight(30) + '授權中沒有')
+                    } else {
+                        $ft = $featureTable[$n]
+                        if ($ft.Issued -gt 0 -and $ft.InUse -ge $ft.Issued) {
+                            Add-Row $sec3 ('      ' + $n.PadRight(30) + '已用完 ' + $ft.InUse + '/' + $ft.Issued)
+                        } else {
+                            Add-Row $sec3 ('      ' + $n.PadRight(30) + '可用 ' + $ft.InUse + '/' + $ft.Issued)
+                        }
+                    }
+                }
+                Add-Row $sec3 ('      -> 可用 ' + $best.Ok + '，未購買 ' + $best.Missing.Count +
+                               '，已用完 ' + $best.Exhausted.Count)
+
+                $altNote = ''
+                if ($results.Count -gt 1) {
+                    $others = @($results | Where-Object { $_.Name -ne $best.Name } |
+                                ForEach-Object { $_.Name + '（缺 ' + $_.Missing.Count + ' 項）' })
+                    $altNote = ([Environment]::NewLine + [Environment]::NewLine +
+                                '「' + $prodQuery + '」在對照表中有多個同名產品，已依實際授權內容判定為上述這一個。' +
+                                [Environment]::NewLine + '其他候選：' + ($others -join '、'))
+                }
+
+                # 任何一項缺少或用完，整個產品就開不起來
+                if ($best.Missing.Count -gt 0) {
+                    $descLines = @()
+                    foreach ($m in ($best.Missing | Select-Object -First 10)) {
+                        $info = Get-IncrementInfo -Name $m
+                        $dd = ''
+                        if ($info -and $info.desc) { $dd = '  ' + $info.desc }
+                        $descLines += ('  - ' + $m + $dd)
+                    }
+                    Add-Finding -Level 'CONFIRMED' -Title ($best.Name + ' 所需的授權項目不完整') `
+                        -Detail ($best.Name + ' 需要 ' + $incs.Count + ' 個 increment，其中 ' + $best.Missing.Count +
+                                 ' 個不在貴司的授權中：' + [Environment]::NewLine +
+                                 ($descLines -join [Environment]::NewLine) +
+                                 $(if ($best.Missing.Count -gt 10) { [Environment]::NewLine + '  （其餘 ' + ($best.Missing.Count - 10) + ' 項略）' } else { '' }) +
+                                 [Environment]::NewLine + [Environment]::NewLine +
+                                 '只要缺少任何一項，該產品就無法啟動。' + $altNote) `
+                        -Fix ('請聯絡 ' + $VENDOR_MAIL + ' 確認貴司的授權內容是否包含 ' + $best.Name + '。' + [Environment]::NewLine +
+                              '若確定已購買，可能是 License 檔案未更新到最新版本。')
+                } elseif ($best.Exhausted.Count -gt 0) {
+                    Add-Finding -Level 'CONFIRMED' -Title ($best.Name + ' 目前無法使用：所需授權已被占用') `
+                        -Detail ($best.Name + ' 需要的 increment 全部都在授權中，但以下項目目前已全部借出：' + [Environment]::NewLine +
+                                 (($best.Exhausted | ForEach-Object {
+                                     $ft = $featureTable[$_]
+                                     '  - ' + $_ + '  ' + $ft.InUse + '/' + $ft.Issued
+                                 }) -join [Environment]::NewLine) + [Environment]::NewLine + [Environment]::NewLine +
+                                 '只要其中一項取不到，該產品就無法啟動。' + $altNote) `
+                        -Fix ('請等待其他使用者釋出，或在授權伺服器上用 Ansys License Management Center' + [Environment]::NewLine +
+                              '  Reporting -> View Current License Usage  查出目前是誰在使用。' + [Environment]::NewLine +
+                              '若經常發生，可考慮加購或用 Options File 保留授權給重要專案。')
+                } else {
+                    Add-Finding -Level 'OK' -Title ($best.Name + ' 所需的授權項目都可取得') `
+                        -Detail ('已比對 ' + $incs.Count + ' 個 increment，全部存在且有空閒。' + $altNote)
+                }
+
+                # 挑鑑別度最高的幾項做實際取得測試。
+                # 共用型 increment（例如 electronics_desktop 被 72 個產品共用）測了也
+                # 分不出是哪個產品的問題，優先測只有這個產品用的那幾個。
+                $rankedInc = @($incs | ForEach-Object {
+                    $info = Get-IncrementInfo -Name $_.name
+                    $sb = 999
+                    if ($info) { $sb = [int]$info.sharedBy }
+                    [pscustomobject]@{ Name = $_.name; SharedBy = $sb }
+                } | Sort-Object SharedBy)
+                foreach ($r in ($rankedInc | Select-Object -First 3)) {
+                    if ((-not $checkoutList.Contains($r.Name)) -and $featureTable.ContainsKey($r.Name)) {
+                        $checkoutList.Add($r.Name) | Out-Null
+                    }
+                }
+            }
+        }
+    }
+
     # --- checkout 測試 ---
     Add-Row $sec3 ''
     Add-Row $sec3 '【實際取得授權測試】'
     if ($NoCheckout) {
         Add-Row $sec3 '  已指定 -NoCheckout，略過。'
-    } elseif (-not $Feature -or $Feature.Count -eq 0) {
-        Add-Row $sec3 '  未指定 -Feature，略過。'
-        Add-Row $sec3 '  提示：加上 -Feature ansys 可實際驗證能否取得授權。'
+    } elseif ($checkoutList.Count -eq 0) {
+        Add-Row $sec3 '  未指定 -Product 或 -Feature，略過。'
+        Add-Row $sec3 '  提示：加上 -Product HFSS 可自動找出該產品所需的授權項目並實際驗證。'
     } else {
+        $Feature = @($checkoutList)
         Write-Host ''
         Write-Host '  接下來會短暫取用一張授權來驗證，' -ForegroundColor Yellow
         Write-Host '  驗證完立即歸還，不會影響其他使用者。' -ForegroundColor Yellow
@@ -892,11 +1131,192 @@ if (-not $connOk) {
 }
 
 # ============================================================================
-#  階段 4：伺服器端
+#  階段 4：雲端彈性授權（AEC / Elastic Licensing）
+# ============================================================================
+Write-Head '階段 4　雲端彈性授權（AEC）'
+$secAec = Add-Section '雲端彈性授權（AEC）'
+
+$AEC_HOST = 'laas.fnocc.com'
+
+# 找一支 LicensingSettings 來查（每個版次一份，用最新的）
+$lsExe = $null
+foreach ($c in ($clientUtils | Sort-Object Version -Descending)) {
+    $cand = Join-Path (Split-Path -Parent $c.Util) 'LicensingSettings.exe'
+    if (Test-Path -LiteralPath $cand) { $lsExe = $cand; break }
+}
+
+$aecEnabled  = $false
+$aecClsId    = ''
+$aecInPlay   = $false   # 這台機器是否真的在用 AEC
+$svcPriority = $null
+
+# 線索一：ansyslmd.ini 裡的 ANSYS_ELASTIC_CLS
+$iniHasElastic = $false
+if ($activeIni -and (Test-Path -LiteralPath $activeIni)) {
+    $iniHasElastic = @(Get-Content -LiteralPath $activeIni -ErrorAction SilentlyContinue |
+                       Where-Object { $_ -match '^\s*ANSYS_ELASTIC_CLS\s*=' }).Count -gt 0
+}
+# 線索二：環境變數
+$envElastic = Get-EnvAny 'ANSYSLI_ELASTIC'
+
+# 線索三：LicensingSettings 的實際設定
+if ($lsExe) {
+    $outE = Invoke-Exe -Path $lsExe -Arguments @('web', 'elastic', 'list') -TimeoutSec 45
+    if ($outE -and $outE -ne '__TIMEOUT__') {
+        if ($outE -match '"enabled"\s*:\s*true')  { $aecEnabled = $true }
+        if ($outE -match '"clsId"\s*:\s*"([^"]*)"') { $aecClsId = $Matches[1] }
+    }
+    $outP = Invoke-Exe -Path $lsExe -Arguments @('preferences', 'service', 'list') -TimeoutSec 45
+    if ($outP -and $outP -ne '__TIMEOUT__') { $svcPriority = $outP }
+}
+
+$aecInPlay = ($aecEnabled -or $iniHasElastic -or (-not [string]::IsNullOrWhiteSpace($envElastic)))
+
+Add-Row $secAec ('LicensingSettings : ' + $(if ($lsExe) { $lsExe } else { '(找不到)' }))
+Add-Row $secAec ('Elastic 已啟用    : ' + $aecEnabled)
+Add-Row $secAec ('CLS ID 已設定     : ' + $(if ($aecClsId) { '是' } else { '否' }))
+Add-Row $secAec ('ansyslmd.ini 含 ANSYS_ELASTIC_CLS : ' + $iniHasElastic)
+Add-Row $secAec ('ANSYSLI_ELASTIC 環境變數          : ' +
+                 $(if ($envElastic) { Protect-Text $envElastic } else { '未設定' }))
+
+if ($svcPriority) {
+    Add-Row $secAec ''
+    Add-Row $secAec '【授權服務優先順序】清單順序即查詢順序'
+    foreach ($l in ($svcPriority -split "`r?`n")) {
+        if ($l.Trim()) { Add-Row $secAec ('  ' + $l.TrimEnd()) }
+    }
+}
+
+if (-not $aecInPlay) {
+    Add-Row $secAec ''
+    Add-Row $secAec '本機未使用雲端彈性授權，略過 AEC 診斷。'
+    Write-Step '本機未使用 AEC，略過'
+
+    # 兩邊都沒有 = 根本沒有任何授權來源
+    if ($resolvedServers.Count -eq 0) {
+        Add-Finding -Level 'CONFIRMED' -Title '本機沒有設定任何授權來源' `
+            -Detail ('既沒有本地授權伺服器設定（ansyslmd.ini 的 SERVER=），' +
+                     '也沒有啟用雲端彈性授權（AEC）。' + [Environment]::NewLine +
+                     'Ansys 產品沒有任何地方可以取得授權。') `
+            -Fix ('請以系統管理員身分開啟 Ansys Licensing Settings（開始 → Ansys 20xx Rx →' + [Environment]::NewLine +
+                  'Ansys Licensing Settings 20xx Rx），設定授權伺服器或匯入 AEC 憑證。' + [Environment]::NewLine +
+                  '不確定貴司使用哪一種授權方式時，請聯絡 ' + $VENDOR_MAIL + '。')
+    }
+} else {
+    Write-Step '本機使用 AEC，進行雲端授權診斷'
+
+    # --- 443 對外連線 ---
+    Add-Row $secAec ''
+    Add-Row $secAec '【對外連線測試】AEC 走 HTTPS 443 連到原廠雲端授權服務'
+    $aecDns = $false
+    $aecTcp = $false
+    try {
+        $ips = @([System.Net.Dns]::GetHostAddresses($AEC_HOST) |
+                 Where-Object { $_.AddressFamily -eq 'InterNetwork' })
+        if ($ips.Count -gt 0) { $aecDns = $true }
+    } catch { }
+    if ($aecDns) {
+        try {
+            $tc = New-Object System.Net.Sockets.TcpClient
+            $iar = $tc.BeginConnect($AEC_HOST, 443, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne(8000, $false) -and $tc.Connected) {
+                $aecTcp = $true; $tc.EndConnect($iar)
+            }
+            $tc.Close()
+        } catch { }
+    }
+    Add-Row $secAec ('  ' + $AEC_HOST + ' 名稱解析 : ' + $(if ($aecDns) { '成功' } else { '失敗' }))
+    Add-Row $secAec ('  ' + $AEC_HOST + ':443 連線 : ' + $(if ($aecTcp) { '成功' } else { '失敗' }))
+
+    if (-not $aecTcp) {
+        Add-Finding -Level 'CONFIRMED' -Title ('無法連線到雲端授權服務 ' + $AEC_HOST + ':443') `
+            -Detail ('AEC 需要透過 HTTPS（443 埠）連到原廠的雲端授權服務。' + [Environment]::NewLine +
+                     '目前' + $(if (-not $aecDns) { '名稱解析就失敗了' } else { '名稱解析成功但 443 連不上' }) + '。' +
+                     [Environment]::NewLine + '沒有這條連線，AEC 完全無法運作。') `
+            -Fix ('請貴司網管放行對 ' + $AEC_HOST + ' 的 443 對外連線。' + [Environment]::NewLine +
+                  '若貴司透過 Proxy 上網，需另外在 Ansys Licensing Settings 設定 Proxy。' + [Environment]::NewLine +
+                  '手動驗證指令：' + [Environment]::NewLine +
+                  '  Test-NetConnection -ComputerName ' + $AEC_HOST + ' -Port 443')
+    } else {
+        Add-Finding -Level 'OK' -Title '雲端授權服務連線正常' `
+            -Detail ($AEC_HOST + ':443 可正常連線。')
+    }
+
+    # --- 憑證 ---
+    Add-Row $secAec ''
+    Add-Row $secAec '【CLS 憑證】'
+    if ($aecEnabled -and [string]::IsNullOrWhiteSpace($aecClsId)) {
+        Add-Row $secAec '  已啟用 Elastic Licensing，但 CLS ID 是空的'
+        Add-Finding -Level 'CONFIRMED' -Title '已啟用雲端彈性授權，但未匯入 CLS 憑證' `
+            -Detail ('Elastic Licensing 已開啟，但 CLS ID 未設定，因此無法向原廠取得授權。') `
+            -Fix ('請以 ASC 採購代表人的帳號登入 https://licensing.ansys.com，' + [Environment]::NewLine +
+                  'Preferences -> Access Credentials -> Export CLS ID and CLS PIN 匯出 .json，' + [Environment]::NewLine +
+                  '再用 Ansys Licensing Settings 的 Elastic Licensing 匯入該檔案。')
+    } elseif ((-not $aecEnabled) -and ($iniHasElastic -or $envElastic)) {
+        Add-Row $secAec '  設定檔中有 AEC 相關設定，但 Elastic Licensing 未啟用'
+        Add-Finding -Level 'CONFIRMED' -Title 'AEC 已設定但未啟用' `
+            -Detail ('ansyslmd.ini 或環境變數中有 AEC 設定，但 Elastic Licensing 目前是關閉狀態，' +
+                     '因此不會去雲端取得授權。') `
+            -Fix ('請以系統管理員身分開啟 Ansys Licensing Settings，在 Elastic Licensing 區塊啟用。')
+    } else {
+        Add-Row $secAec ('  CLS ID 已設定，Elastic Licensing 已啟用')
+    }
+
+    # --- 服務優先順序 ---
+    if ($svcPriority) {
+        $elasticOn = ($svcPriority -match '"name"\s*:\s*"web-elastic"[\s\S]{0,60}?"enable"\s*:\s*true')
+        if (-not $elasticOn) {
+            Add-Finding -Level 'CONFIRMED' -Title '雲端彈性授權服務未啟用（web-elastic = false）' `
+                -Detail ('授權服務優先順序中，web-elastic 的 enable 是 false，' +
+                         '代表即使 CLS 憑證設定正確，產品也不會去雲端取用授權。') `
+                -Fix ('用 Ansys Licensing Settings 啟用，或執行：' + [Environment]::NewLine +
+                      '  LicensingSettings preferences service list      查看目前順序' + [Environment]::NewLine +
+                      '  LicensingSettings preferences service reset     還原預設順序')
+        }
+    }
+
+    # --- Proxy ---
+    if ($lsExe) {
+        $outPx = Invoke-Exe -Path $lsExe -Arguments @('web', 'proxy', 'list') -TimeoutSec 45
+        if ($outPx -and $outPx -ne '__TIMEOUT__') {
+            Add-Row $secAec ''
+            Add-Row $secAec '【Proxy 設定】'
+            foreach ($l in ($outPx -split "`r?`n")) {
+                if (-not $l.Trim()) { continue }
+                # password 欄位一律遮蔽，不論有沒有加 -Anonymize。
+                # 這份報告是要寄出去的，絕不能把憑證帶出去。
+                $safe = [regex]::Replace($l, '("password"\s*:\s*")[^"]*(")', '${1}********${2}')
+                Add-Row $secAec ('  ' + (Protect-Text $safe))
+            }
+            if ($outPx -match '"(windowsEnabled|otherEnabled)"\s*:\s*true') {
+                Add-Finding -Level 'INFO' -Title '本機透過 Proxy 連線' `
+                    -Detail ('AEC 的連線會經過 Proxy。若 443 測試失敗，Proxy 設定是首要懷疑對象。' +
+                             [Environment]::NewLine + '（報告中的 Proxy 密碼欄位已遮蔽）') `
+                    -Fix ('可用以下指令測試 Proxy：' + [Environment]::NewLine +
+                          '  LicensingSettings web proxy test')
+            }
+        }
+    }
+
+    # --- 無法自動判定的兩件事 ---
+    Add-Finding -Level 'MANUAL' -Title 'AEC 有兩件事本工具無法自動確認' `
+        -Detail ('1. 點數是否已用完。' + [Environment]::NewLine +
+                 '   原廠入口網站的點數顯示會延遲，看到「還有點數」不代表當下真的還有。' + [Environment]::NewLine +
+                 '   若軟體端訊息是「點數不足」而非「連線失敗」，請以軟體端為準。' + [Environment]::NewLine +
+                 '2. 原廠是否正在系統維護。' + [Environment]::NewLine +
+                 '   維護期間所有 AEC 使用者都會同時無法啟動，症狀看起來像自己的設定壞了。') `
+        -Fix ('查詢原廠雲端服務狀態（排查 AEC 問題時建議最先確認，只要幾秒鐘）：' + [Environment]::NewLine +
+              '  https://cloudforum.ansys.com/category/serviceissues' + [Environment]::NewLine +
+              '查詢剩餘點數：' + [Environment]::NewLine +
+              '  https://licensing.ansys.com')
+}
+
+# ============================================================================
+#  階段 5：伺服器端
 # ============================================================================
 $sec4 = $null
 if ($isServer) {
-    Write-Head '階段 4　伺服器端'
+    Write-Head '階段 5　伺服器端'
     $sec4 = Add-Section '伺服器端'
 
     # 服務
@@ -1107,13 +1527,13 @@ if ($isServer) {
         Add-Row $sec4 '  這個系統沒有 Get-NetFirewallRule，略過'
     }
 } else {
-    Write-Step '本機不是授權伺服器，略過階段 4'
+    Write-Step '本機不是授權伺服器，略過階段 5'
 }
 
 # ============================================================================
-#  階段 5：基線比對
+#  階段 6：基線比對
 # ============================================================================
-Write-Head '階段 5　基線比對'
+Write-Head '階段 6　基線比對'
 $sec5 = Add-Section '基線比對'
 
 # 目前狀態快照
@@ -1210,7 +1630,7 @@ if ($SaveBaseline) {
 }
 
 # ============================================================================
-#  階段 6：判定與輸出
+#  階段 7：判定與輸出
 # ============================================================================
 
 # 案件編號

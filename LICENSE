@@ -1,0 +1,26 @@
+Copyright (c) 2026 Jeff Hong (洪敬傑)
+
+This repository is published as a personal technical portfolio and demonstration
+project. All rights are reserved by the author.
+
+No permission is granted for commercial use, redistribution, or creation of
+derivative works without prior written consent from the author.
+
+This project is an independent technical portfolio and is not an official account
+of Taiwan Auto-Design Co. (TADC). Where applicable, Ansys, HFSS, SIwave and
+FlexNet are trademarks of their respective owners; this project is not officially
+affiliated with Ansys, Inc. or Flexera.
+
+This tool is a diagnostic aid based on field experience, not official Ansys
+documentation. It performs read-only inspection and reports findings; any
+remediation commands it prints are suggestions for a qualified administrator to
+review, not instructions to run blindly. Menu names, file paths and service
+behaviour differ between releases. Always verify against the Ansys, Inc. Licensing
+Guide for the release you are running. Use at your own risk.
+
+The product-to-increment mapping data used by the optional -Product feature is
+Ansys proprietary information and is NOT distributed with this repository. Users
+must generate it locally from their own copy of the Ansys "Product to License
+Increment Mapping" document, obtained through the Ansys Customer Portal.
+
+For licensing inquiries or collaboration, contact: jeff.hong@cadmen.com
