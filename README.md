@@ -76,7 +76,42 @@ powershell -ExecutionPolicy Bypass -File .\Check-AnsysLicense.ps1
 | `-Expected <路徑>` | 指定基線檔，預設抓腳本旁的 `expected.json` |
 | `-Anonymize` | 去識別化：使用者帳號、內網 IP、第三方程式名稱雜湊處理 |
 | `-NoCheckout` | 不做實際取得授權的測試，只觀察 |
+| `-Json` | 另外輸出機器可讀的 findings JSON（見下方） |
 | `-OutDir <路徑>` | 報告輸出目錄，預設 `reports\` |
+
+### `-Json`：機器可讀的診斷結果
+
+除了給人看的報告，另外輸出 `*.findings.json`：
+
+```json
+{
+  "schemaVersion": 1,
+  "caseId": "ACME-20260828",
+  "machine": { "computerName": "…", "role": "Server+Client", "architecture": "CVD" },
+  "findings": [
+    { "level": "CONFIRMED", "title": "主機名稱解析失敗：SRV-A",
+      "fixAction": "add-hosts-entry", "fixTier": 2, "fixOn": "local",
+      "fixParams": { "hostname": "SRV-A", "ip": "" } }
+  ],
+  "actionable": ["restore-from-baseline", "add-hosts-entry"],
+  "notAutomatable": []
+}
+```
+
+每個 finding 除了給人看的文字，還帶四個機器可讀欄位：
+
+| 欄位 | 意義 |
+| --- | --- |
+| `fixAction` | 對應的修復動作 id（15 種，見 `$ACTION_CATALOG`） |
+| `fixTier` | 影響半徑分級。1 = 只影響 Ansys 且可逆，2 = 動到機器層級設定，3 = 會波及其他軟體或需跨機器協調 |
+| `fixOn` | 該動作要在哪一台機器執行：`local` 或 `licenseServer` |
+| `fixParams` | 該動作需要的參數，取自實際觀測值 |
+
+`actionable` 只收 **`level == CONFIRMED` 且 `fixTier < 3`** 的動作——
+**工具不敢斷言的事，就不准自動去改**。Tier 3 另外列進 `notAutomatable` 供人工處理。
+
+**這支工具本身不會執行任何修復動作**，標記只是為了讓 [修復工具](docs/修復工具設計.md)
+能消費這份輸出。
 
 ---
 

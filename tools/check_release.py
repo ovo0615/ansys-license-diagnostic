@@ -59,6 +59,7 @@ FORBIDDEN = [
     (r'(^|/)ansyslmd\.ini$', '客戶的授權設定檔'),
     (r'\.(pem|key)$|(^|/)\.env', '憑證或環境設定檔'),
     (r'(^|/)AnsysLicense_.*\.(html|txt)$', '診斷報告'),
+    (r'\.findings\.json$', '機器可讀的診斷結果，含客戶識別資訊'),
 ]
 
 

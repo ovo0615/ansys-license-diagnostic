@@ -49,6 +49,11 @@
 .PARAMETER NoCheckout
     即使指定了 -Feature 也不做實際 checkout 測試，只做觀察。
 
+.PARAMETER Json
+    另外輸出一份機器可讀的 findings JSON。
+    供我方的解決包產生器使用；本工具本身不會執行任何修復動作。
+    未指定路徑時與報告放在同一個目錄。
+
 .PARAMETER OutDir
     報告輸出目錄，預設為腳本所在目錄下的 reports\。
 
@@ -81,6 +86,7 @@ param(
     [switch]   $SaveBaseline,
     [switch]   $Anonymize,
     [switch]   $NoCheckout,
+    [switch]   $Json,
     [string]   $OutDir
 )
 
@@ -180,6 +186,36 @@ function Get-IncrementInfo {
     return $p.Value
 }
 
+# ----------------------------------------------------------------------------
+#  修復動作目錄
+#
+#  這裡只是「把診斷結果標記成某一類可能的修復動作」，本工具不會執行任何動作。
+#  標記的用途是讓 -Json 的輸出可以被我方的解決包產生器消費。
+#
+#  Tier 依「出錯時的影響半徑」分級，不是依修改難易度：
+#    1 只影響 Ansys、只影響本機、可逆
+#    2 動到機器層級設定，需逐項明確授權
+#    3 會波及其他軟體或需跨機器協調，永不自動化
+#  詳見 docs/修復工具設計.md
+# ----------------------------------------------------------------------------
+$ACTION_CATALOG = [ordered]@{
+    'set-license-server'       = @{ Tier = 1; Label = '設定授權伺服器指向' }
+    'remove-stale-env'         = @{ Tier = 1; Label = '刪除殘留的環境變數' }
+    'remove-user-ini'          = @{ Tier = 1; Label = '刪除使用者層級的 ansyslmd.ini' }
+    'clear-license-cache'      = @{ Tier = 1; Label = '清除本機授權快取' }
+    'restart-license-manager'  = @{ Tier = 1; Label = '重新啟動 License Manager' }
+    'restore-from-baseline'    = @{ Tier = 1; Label = '把設定還原成基線狀態' }
+    'enable-elastic-licensing' = @{ Tier = 1; Label = '啟用雲端彈性授權' }
+    'enable-elastic-service'   = @{ Tier = 1; Label = '啟用 web-elastic 授權服務' }
+    'add-firewall-rules'       = @{ Tier = 2; Label = '新增防火牆例外' }
+    'add-hosts-entry'          = @{ Tier = 2; Label = '新增 hosts 檔對應' }
+    'install-license-file'     = @{ Tier = 2; Label = '安裝或更換 License 檔案' }
+    'import-cls-credential'    = @{ Tier = 2; Label = '匯入 CLS 憑證' }
+    'stop-conflicting-service' = @{ Tier = 3; Label = '停用占用連接埠的第三方服務' }
+    'change-flexnet-port'      = @{ Tier = 3; Label = '變更 FlexNet 連接埠' }
+    'reinstall-license-manager'= @{ Tier = 3; Label = '重新安裝 License Manager' }
+}
+
 function Add-Finding {
     param(
         [ValidateSet('CONFIRMED', 'SUSPECT', 'MANUAL', 'OK', 'INFO')]
@@ -187,10 +223,22 @@ function Add-Finding {
         [string] $Title,
         [string] $Detail = '',
         [string] $Fix = '',
-        [string] $Ref = ''
+        [string] $Ref = '',
+        # 以下三個給 -Json 用，供解決包產生器消費。本工具不會執行任何修復。
+        [string] $FixAction = '',
+        [hashtable] $FixParams = $null,
+        # 動作要在哪一台機器執行。從用戶端看到的伺服器問題，修復要在伺服器上做，
+        # 沒有這個欄位的話，解決包產生器會把它誤放進用戶端的計畫裡。
+        [ValidateSet('local', 'licenseServer')]
+        [string] $FixOn = 'local'
     )
+    $tier = 0
+    if ($FixAction -and $ACTION_CATALOG.Contains($FixAction)) {
+        $tier = $ACTION_CATALOG[$FixAction].Tier
+    }
     $script:Findings.Add([pscustomobject]@{
         Level = $Level; Title = $Title; Detail = $Detail; Fix = $Fix; Ref = $Ref
+        FixAction = $FixAction; FixTier = $tier; FixParams = $FixParams; FixOn = $FixOn
     }) | Out-Null
 }
 
@@ -494,7 +542,7 @@ if ($activeIni -and (Test-Path -LiteralPath $activeIni)) {
     $iniLines = @(Get-Content -LiteralPath $activeIni -ErrorAction SilentlyContinue)
     if ($iniLines.Count -eq 0) {
         Add-Row $sec1 '  （檔案存在但內容為空）'
-        Add-Finding -Level 'CONFIRMED' -Title 'ansyslmd.ini 是空的' `
+        Add-Finding -FixAction 'set-license-server' -Level 'CONFIRMED' -Title 'ansyslmd.ini 是空的' `
             -Detail ($activeIni + ' 存在但沒有任何內容，用戶端不知道要找哪一台授權伺服器。') `
             -Fix '請用 Ansys Licensing Settings 重新設定授權伺服器，或向技術支援索取正確的設定內容。'
     } else {
@@ -502,7 +550,7 @@ if ($activeIni -and (Test-Path -LiteralPath $activeIni)) {
         $hasServerLine = @($iniLines | Where-Object { $_ -match '^\s*SERVER\s*=' }).Count -gt 0
         $hasElastic    = @($iniLines | Where-Object { $_ -match '^\s*ANSYS_ELASTIC_CLS\s*=' }).Count -gt 0
         if (-not $hasServerLine -and -not $hasElastic) {
-            Add-Finding -Level 'CONFIRMED' -Title 'ansyslmd.ini 沒有 SERVER= 設定' `
+            Add-Finding -FixAction 'set-license-server' -Level 'CONFIRMED' -Title 'ansyslmd.ini 沒有 SERVER= 設定' `
                 -Detail '設定檔中找不到任何 SERVER= 行，用戶端沒有指向任何授權伺服器。' `
                 -Fix '請用 Ansys Licensing Settings 加入授權伺服器。'
         }
@@ -514,7 +562,7 @@ if ($activeIni -and (Test-Path -LiteralPath $activeIni)) {
 } else {
     Add-Row $sec1 '  >> 檔案不存在'
     if ($licDir) {
-        Add-Finding -Level 'CONFIRMED' -Title '找不到 ansyslmd.ini' `
+        Add-Finding -FixAction 'set-license-server' -Level 'CONFIRMED' -Title '找不到 ansyslmd.ini' `
             -Detail ('預期位置：' + $activeIni + [Environment]::NewLine +
                      '用戶端沒有這個檔案就不知道要連哪一台授權伺服器。') `
             -Fix '請用 Ansys Licensing Settings 設定授權伺服器，或從同網段一台正常的機器複製一份到相同路徑。'
@@ -531,7 +579,7 @@ if (Test-Path -LiteralPath $userIni) {
     foreach ($l in @(Get-Content -LiteralPath $userIni -ErrorAction SilentlyContinue)) {
         Add-Row $sec1 ('    ' + (Protect-Text $l))
     }
-    Add-Finding -Level 'SUSPECT' -Title '存在使用者層級的 ansyslmd.ini' `
+    Add-Finding -FixAction 'remove-user-ini' -FixParams @{ path = $userIni } -Level 'SUSPECT' -Title '存在使用者層級的 ansyslmd.ini' `
         -Detail ('這份設定的優先度高於全域設定，會蓋掉它。' + [Environment]::NewLine +
                  '若「同一台機器只有這個使用者不能用」，這通常就是原因。' + [Environment]::NewLine +
                  '取值順序：環境變數 > 使用者層級 ini > 全域安裝設定') `
@@ -576,7 +624,7 @@ foreach ($n in $envNames) {
 
 $vLic = Get-EnvAny 'ANSYSLMD_LICENSE_FILE'
 if (-not [string]::IsNullOrWhiteSpace($vLic)) {
-    Add-Finding -Level 'SUSPECT' -Title 'ANSYSLMD_LICENSE_FILE 環境變數存在' `
+    Add-Finding -FixAction 'remove-stale-env' -FixParams @{ names = @('ANSYSLMD_LICENSE_FILE'); currentValue = $vLic } -Level 'SUSPECT' -Title 'ANSYSLMD_LICENSE_FILE 環境變數存在' `
         -Detail ('目前值：' + (Protect-Text $vLic) + [Environment]::NewLine +
                  '這個變數會把它指定的伺服器「插到伺服器清單最前面」，不是取代。' + [Environment]::NewLine +
                  '所以症狀通常是「連到錯的伺服器」或「在無效的伺服器上卡到逾時」，而不是完全連不上。' + [Environment]::NewLine +
@@ -586,7 +634,7 @@ if (-not [string]::IsNullOrWhiteSpace($vLic)) {
 }
 $vSrv = Get-EnvAny 'ANSYSLI_SERVERS'
 if ((-not [string]::IsNullOrWhiteSpace($vSrv)) -and (-not $isLegacy)) {
-    Add-Finding -Level 'SUSPECT' -Title 'ANSYSLI_SERVERS 環境變數存在，但本機是 Common Licensing 架構' `
+    Add-Finding -FixAction 'remove-stale-env' -FixParams @{ names = @('ANSYSLI_SERVERS'); currentValue = $vSrv } -Level 'SUSPECT' -Title 'ANSYSLI_SERVERS 環境變數存在，但本機是 Common Licensing 架構' `
         -Detail ('目前值：' + (Protect-Text $vSrv) + [Environment]::NewLine +
                  '2021 R1 以後的架構不再使用 Licensing Interconnect，這個變數應為舊安裝殘留。') `
         -Fix '確認不需要後刪除此環境變數。'
@@ -617,7 +665,7 @@ if ($clientUtils.Count -eq 0) {
 }
 
 if ($resolvedServers.Count -eq 0 -and $isClient) {
-    Add-Finding -Level 'CONFIRMED' -Title '用戶端解析不到任何授權伺服器' `
+    Add-Finding -FixAction 'set-license-server' -Level 'CONFIRMED' -Title '用戶端解析不到任何授權伺服器' `
         -Detail '所有已安裝版次的用戶端回報的伺服器清單都是空的。設定檔可能遺失、為空、或格式不正確。' `
         -Fix '請用 Ansys Licensing Settings 重新設定授權伺服器。'
 }
@@ -759,7 +807,7 @@ if ($serverStates.Count -gt 0 -and -not $isLegacy) {
         }
 
         if ($st.LmgrdUp -and (-not $st.DaemonUp)) {
-            Add-Finding -Level 'CONFIRMED' -Title ('vendor daemon 未運作：' + $tag) `
+            Add-Finding -FixAction 'restart-license-manager' -FixOn 'licenseServer' -Level 'CONFIRMED' -Title ('vendor daemon 未運作：' + $tag) `
                 -Detail ('lmgrd 有回應，但 ansyslmd（實際發放授權的程式）沒有運作。' + [Environment]::NewLine +
                          '對應 FlexNet 錯誤 -97。授權伺服器等於半死狀態。') `
                 -Fix ('請在授權伺服器上：' + [Environment]::NewLine +
@@ -772,7 +820,7 @@ if ($serverStates.Count -gt 0 -and -not $isLegacy) {
 
         switch ($st.WinSock) {
             '11001' {
-                Add-Finding -Level 'CONFIRMED' -Title ('主機名稱解析失敗：' + (Protect-Text $st.Host)) `
+                Add-Finding -FixAction 'add-hosts-entry' -FixParams @{ hostname = $st.Host; ip = '' } -Level 'CONFIRMED' -Title ('主機名稱解析失敗：' + (Protect-Text $st.Host)) `
                     -Detail ('用戶端找不到 ' + (Protect-Text $st.Host) + ' 這台機器（WinSock 11001 Host not found）。' + [Environment]::NewLine +
                              '這是名稱解析問題，不是防火牆問題。') `
                     -Fix ('三選一：' + [Environment]::NewLine +
@@ -782,7 +830,7 @@ if ($serverStates.Count -gt 0 -and -not $isLegacy) {
                           '  3. 確認伺服器主機名稱是否已變更；若是，請改用新名稱設定')
             }
             '10061' {
-                Add-Finding -Level 'CONFIRMED' -Title ('連接埠 ' + $st.Port + ' 沒有服務在監聽：' + (Protect-Text $st.Host)) `
+                Add-Finding -FixAction 'restart-license-manager' -FixOn 'licenseServer' -Level 'CONFIRMED' -Title ('連接埠 ' + $st.Port + ' 沒有服務在監聽：' + (Protect-Text $st.Host)) `
                     -Detail ('主機找得到也連得上，但 ' + $st.Port + ' 埠拒絕連線（WinSock 10061 Connection refused）。' + [Environment]::NewLine +
                              '代表授權伺服器主機是活的，但 lmgrd 沒有在這個埠上運作。' + [Environment]::NewLine +
                              '注意：這不是防火牆——防火牆通常是丟棄封包造成逾時，而不是明確拒絕。') `
@@ -795,7 +843,7 @@ if ($serverStates.Count -gt 0 -and -not $isLegacy) {
                           '  4. 也請確認伺服器的 SERVER 行埠號與此處設定的 ' + $st.Port + ' 一致')
             }
             'TIMEOUT' {
-                Add-Finding -Level 'SUSPECT' -Title ('連線逾時：' + $tag) `
+                Add-Finding -FixAction 'add-firewall-rules' -FixOn 'licenseServer' -Level 'SUSPECT' -Title ('連線逾時：' + $tag) `
                     -Detail ('60 秒內沒有任何回應。封包被丟棄（而非拒絕）通常代表防火牆阻擋，' +
                              '但也可能是網路路由問題或伺服器負載過高。' + [Environment]::NewLine +
                              '本工具無法區分這幾種情況，因此不下定論。') `
@@ -808,7 +856,7 @@ if ($serverStates.Count -gt 0 -and -not $isLegacy) {
             default {
                 $ws = $st.WinSock
                 if ($ws -eq '10060') {
-                    Add-Finding -Level 'SUSPECT' -Title ('連線逾時（WinSock 10060）：' + $tag) `
+                    Add-Finding -FixAction 'add-firewall-rules' -FixOn 'licenseServer' -Level 'SUSPECT' -Title ('連線逾時（WinSock 10060）：' + $tag) `
                         -Detail '封包送出後沒有回應，通常是防火牆丟棄封包。也可能是網路不通。' `
                         -Fix ('請確認授權伺服器防火牆已放行 TCP ' + $st.Port + '，並將 lmgrd.exe、ansyslmd.exe 設為例外。')
                 } elseif ($ws -eq '10051' -or $ws -eq '10065' -or $ws -eq '10032') {
@@ -1116,7 +1164,7 @@ if (-not $connOk) {
                 if ($dt) {
                     $days = [int]([math]::Floor(($dt - (Get-Date)).TotalDays))
                     if ($days -lt 0) {
-                        Add-Finding -Level 'CONFIRMED' -Title ('授權已過期：' + $fnT) `
+                        Add-Finding -FixAction 'install-license-file' -FixOn 'licenseServer' -Level 'CONFIRMED' -Title ('授權已過期：' + $fnT) `
                             -Detail ('到期日 ' + $expiry + '，已經過期 ' + [math]::Abs($days) + ' 天。') `
                             -Fix ('請聯絡 ' + $VENDOR_MAIL + ' 辦理續約並取得新的 License 檔案。')
                     } elseif ($days -le 30) {
@@ -1194,7 +1242,7 @@ if (-not $aecInPlay) {
 
     # 兩邊都沒有 = 根本沒有任何授權來源
     if ($resolvedServers.Count -eq 0) {
-        Add-Finding -Level 'CONFIRMED' -Title '本機沒有設定任何授權來源' `
+        Add-Finding -FixAction 'set-license-server' -Level 'CONFIRMED' -Title '本機沒有設定任何授權來源' `
             -Detail ('既沒有本地授權伺服器設定（ansyslmd.ini 的 SERVER=），' +
                      '也沒有啟用雲端彈性授權（AEC）。' + [Environment]::NewLine +
                      'Ansys 產品沒有任何地方可以取得授權。') `
@@ -1247,14 +1295,14 @@ if (-not $aecInPlay) {
     Add-Row $secAec '【CLS 憑證】'
     if ($aecEnabled -and [string]::IsNullOrWhiteSpace($aecClsId)) {
         Add-Row $secAec '  已啟用 Elastic Licensing，但 CLS ID 是空的'
-        Add-Finding -Level 'CONFIRMED' -Title '已啟用雲端彈性授權，但未匯入 CLS 憑證' `
+        Add-Finding -FixAction 'import-cls-credential' -Level 'CONFIRMED' -Title '已啟用雲端彈性授權，但未匯入 CLS 憑證' `
             -Detail ('Elastic Licensing 已開啟，但 CLS ID 未設定，因此無法向原廠取得授權。') `
             -Fix ('請以 ASC 採購代表人的帳號登入 https://licensing.ansys.com，' + [Environment]::NewLine +
                   'Preferences -> Access Credentials -> Export CLS ID and CLS PIN 匯出 .json，' + [Environment]::NewLine +
                   '再用 Ansys Licensing Settings 的 Elastic Licensing 匯入該檔案。')
     } elseif ((-not $aecEnabled) -and ($iniHasElastic -or $envElastic)) {
         Add-Row $secAec '  設定檔中有 AEC 相關設定，但 Elastic Licensing 未啟用'
-        Add-Finding -Level 'CONFIRMED' -Title 'AEC 已設定但未啟用' `
+        Add-Finding -FixAction 'enable-elastic-licensing' -Level 'CONFIRMED' -Title 'AEC 已設定但未啟用' `
             -Detail ('ansyslmd.ini 或環境變數中有 AEC 設定，但 Elastic Licensing 目前是關閉狀態，' +
                      '因此不會去雲端取得授權。') `
             -Fix ('請以系統管理員身分開啟 Ansys Licensing Settings，在 Elastic Licensing 區塊啟用。')
@@ -1266,7 +1314,7 @@ if (-not $aecInPlay) {
     if ($svcPriority) {
         $elasticOn = ($svcPriority -match '"name"\s*:\s*"web-elastic"[\s\S]{0,60}?"enable"\s*:\s*true')
         if (-not $elasticOn) {
-            Add-Finding -Level 'CONFIRMED' -Title '雲端彈性授權服務未啟用（web-elastic = false）' `
+            Add-Finding -FixAction 'enable-elastic-service' -Level 'CONFIRMED' -Title '雲端彈性授權服務未啟用（web-elastic = false）' `
                 -Detail ('授權服務優先順序中，web-elastic 的 enable 是 false，' +
                          '代表即使 CLS 憑證設定正確，產品也不會去雲端取用授權。') `
                 -Fix ('用 Ansys Licensing Settings 啟用，或執行：' + [Environment]::NewLine +
@@ -1331,7 +1379,7 @@ if ($isServer) {
         }
         $stopped = @($svcs | Where-Object { $_.Status -ne 'Running' -and $_.Name -like '*License Manager*' })
         if ($stopped.Count -gt 0) {
-            Add-Finding -Level 'CONFIRMED' -Title 'License Manager 服務未執行' `
+            Add-Finding -FixAction 'restart-license-manager' -Level 'CONFIRMED' -Title 'License Manager 服務未執行' `
                 -Detail ('以下服務不在執行狀態：' + (($stopped | ForEach-Object { $_.Name }) -join ', ')) `
                 -Fix ('請以系統管理員身分開啟 Ansys License Management Center，' + [Environment]::NewLine +
                       '進入 View Status/Start/Stop License Manager 後點選 START。')
@@ -1356,7 +1404,7 @@ if ($isServer) {
         }
     }
     if (-not $lmgrdRunning) {
-        Add-Finding -Level 'CONFIRMED' -Title 'lmgrd 沒有在執行' `
+        Add-Finding -FixAction 'restart-license-manager' -Level 'CONFIRMED' -Title 'lmgrd 沒有在執行' `
             -Detail '本機是授權伺服器，但 lmgrd.exe 沒有運作，因此無法對外提供授權。' `
             -Fix ('請以系統管理員身分開啟 Ansys License Management Center 並啟動 License Manager。' + [Environment]::NewLine +
                   '若啟動失敗，請往下看「連接埠占用」段落。')
@@ -1380,7 +1428,7 @@ if ($isServer) {
         if ($conns.Count -eq 0) {
             Add-Row $sec4 ('  TCP ' + $p + ' : 沒有程式在監聽')
             if ($p -eq 1055) {
-                Add-Finding -Level 'CONFIRMED' -Title '連接埠 1055 沒有任何程式在監聽' `
+                Add-Finding -FixAction 'restart-license-manager' -Level 'CONFIRMED' -Title '連接埠 1055 沒有任何程式在監聽' `
                     -Detail '授權伺服器上 lmgrd 應該綁定 1055，目前沒有。代表 License Manager 沒有啟動成功。' `
                     -Fix ('請以系統管理員身分啟動 Ansys License Management Center，' + [Environment]::NewLine +
                           '若按下 START 仍失敗，請查看 View FlexNet Debug Log 的錯誤原因。')
@@ -1397,7 +1445,7 @@ if ($isServer) {
             Add-Row $sec4 ('  TCP ' + $p + ' : ' + $shown + '.exe  (PID ' + $c.OwningProcess + ')')
 
             if ($p -eq 1055 -and $pname -ne 'lmgrd' -and $pname -ne '(查不到)') {
-                Add-Finding -Level 'CONFIRMED' -Title ('連接埠 1055 被其他程式占用：' + $shown + '.exe') `
+                Add-Finding -FixAction 'stop-conflicting-service' -FixParams @{ port = 1055; processName = $pname; processId = $c.OwningProcess } -Level 'CONFIRMED' -Title ('連接埠 1055 被其他程式占用：' + $shown + '.exe') `
                     -Detail ('1055 是 Ansys License Manager 的預設埠，目前被 ' + $shown + '.exe (PID ' +
                              $c.OwningProcess + ') 占用，導致 lmgrd 無法啟動。' + [Environment]::NewLine +
                              '1055 並非 Ansys 專用埠，其他使用 FlexNet 的軟體（PTC、部分 EDA/CAD 工具）也可能設定在此埠。' + [Environment]::NewLine +
@@ -1434,7 +1482,7 @@ if ($isServer) {
                      ForEach-Object { $_.Trim() } | Select-Object -Unique)
             if ($hdr.Count -eq 0) {
                 Add-Row $sec4 '    >> 找不到 SERVER 行'
-                Add-Finding -Level 'CONFIRMED' -Title 'License 檔案缺少 SERVER 行' `
+                Add-Finding -FixAction 'install-license-file' -Level 'CONFIRMED' -Title 'License 檔案缺少 SERVER 行' `
                     -Detail ($lf.FullName + ' 中找不到 SERVER 行。對應 FlexNet 錯誤 -13。' + [Environment]::NewLine +
                              '常見原因是檔案經過郵件轉寄、網頁複製貼上、或以 UTF-8 存檔而損壞。') `
                     -Fix ('請勿手動編輯 License 檔案。請聯絡 ' + $VENDOR_MAIL + ' 重新索取原始檔案，' + [Environment]::NewLine +
@@ -1448,7 +1496,7 @@ if ($isServer) {
                 if ($h -match '^\s*SERVER\s+(\S+)\s+(\S+)') {
                     $licHost = $Matches[1]; $licHostId = $Matches[2]
                     if ($licHost -ine $env:COMPUTERNAME -and $licHost -ne 'this_host') {
-                        Add-Finding -Level 'CONFIRMED' -Title 'License 檔案綁定的主機名稱與本機不符' `
+                        Add-Finding -FixAction 'install-license-file' -Level 'CONFIRMED' -Title 'License 檔案綁定的主機名稱與本機不符' `
                             -Detail ('License 檔案的 SERVER 行寫的是 ' + (Protect-Text $licHost) +
                                      '，但本機名稱是 ' + (Protect-Text $env:COMPUTERNAME) + '。' + [Environment]::NewLine +
                                      'lmgrd 會因此拒絕啟動。') `
@@ -1463,7 +1511,7 @@ if ($isServer) {
                                      ForEach-Object { $_.Value.ToLower() })
                             Add-Row $sec4 ('    本機 HostID : ' + (($ids | ForEach-Object { Protect-Value -Value $_ -Prefix 'hid' }) -join ', '))
                             if ($ids.Count -gt 0 -and ($ids -notcontains $licHostId.ToLower())) {
-                                Add-Finding -Level 'CONFIRMED' -Title 'License 檔案綁定的 HostID 與本機不符' `
+                                Add-Finding -FixAction 'install-license-file' -Level 'CONFIRMED' -Title 'License 檔案綁定的 HostID 與本機不符' `
                                     -Detail ('License 綁定的 HostID 不在本機目前的 HostID 清單中。' + [Environment]::NewLine +
                                              '常見原因：更換或停用網卡、更換硬碟、虛擬機遷移造成 MAC 變更。') `
                                     -Fix ('請聯絡 ' + $VENDOR_MAIL + ' 辦理換機（HostID 變更視同換機，一年上限三次）。' + [Environment]::NewLine +
@@ -1488,7 +1536,7 @@ if ($isServer) {
     }
     if (-not $foundLic) {
         Add-Row $sec4 '  找不到 License 檔案'
-        Add-Finding -Level 'CONFIRMED' -Title '授權伺服器上找不到 License 檔案' `
+        Add-Finding -FixAction 'install-license-file' -Level 'CONFIRMED' -Title '授權伺服器上找不到 License 檔案' `
             -Detail ('預期位置：' + ($licFileDirs -join ' 或 ')) `
             -Fix ('請用 License Management Center 的 Add a License File 加入 License 檔案。' + [Environment]::NewLine +
                   '若沒有 License 檔案，請聯絡 ' + $VENDOR_MAIL + '。')
@@ -1514,7 +1562,7 @@ if ($isServer) {
             Add-Row $sec4 '  （放行可能是以程式方式設定，或由網域群組原則統一管理）'
         } else {
             Add-Row $sec4 '  找不到針對 TCP 1055 的輸入允許規則'
-            Add-Finding -Level 'SUSPECT' -Title '找不到 TCP 1055 的防火牆輸入允許規則' `
+            Add-Finding -FixAction 'add-firewall-rules' -Level 'SUSPECT' -Title '找不到 TCP 1055 的防火牆輸入允許規則' `
                 -Detail ('未找到明確放行 1055 的輸入規則。若用戶端連線逾時，這可能是原因。' + [Environment]::NewLine +
                          '注意：也可能是以「程式」而非「連接埠」的方式放行，或由網域群組原則統一管理，' +
                          '因此本工具不將此列為確定根因。') `
@@ -1616,7 +1664,7 @@ if ($SaveBaseline) {
                     -Detail '用戶端設定自基線建立以來沒有變動，問題可能不在設定，而在伺服器狀態或網路。'
             } else {
                 foreach ($d in $diffs) { Add-Row $sec5 ('  ' + (Protect-Text $d)) }
-                Add-Finding -Level 'CONFIRMED' -Title ('組態與基線不符，偵測到 ' + $diffs.Count + ' 項變更') `
+                Add-Finding -FixAction 'restore-from-baseline' -FixParams @{ baselinePath = $blPath; differences = @($diffs) } -Level 'CONFIRMED' -Title ('組態與基線不符，偵測到 ' + $diffs.Count + ' 項變更') `
                     -Detail ('基線建立於 ' + $bl.CreatedAt + '，之後有以下變更：' + [Environment]::NewLine +
                              (($diffs | ForEach-Object { '  - ' + (Protect-Text $_) }) -join [Environment]::NewLine)) `
                     -Fix '請確認這些變更是否為預期。將設定改回基線狀態通常即可恢復。'
@@ -1893,11 +1941,73 @@ try {
     Write-Host ('  HTML 報告寫入失敗：' + $_.Exception.Message) -ForegroundColor Red
 }
 
+# --- findings JSON（供解決包產生器使用）---
+$jsonPath = $null
+if ($Json) {
+    $jsonPath = Join-Path $OutDir ($baseName + '.findings.json')
+
+    $jsonFindings = @()
+    foreach ($f in $sorted) {
+        $params = $null
+        if ($f.FixParams) {
+            # hashtable 直接丟給 ConvertTo-Json 在 PS 5.1 會變成一堆 Keys/Values，
+            # 先轉成 PSCustomObject 才會序列化成正常的物件。
+            $params = [pscustomobject]$f.FixParams
+        }
+        $jsonFindings += [pscustomobject]@{
+            level     = $f.Level
+            title     = $f.Title
+            detail    = $f.Detail
+            fixText   = $f.Fix
+            fixAction = $(if ($f.FixAction) { $f.FixAction } else { $null })
+            fixTier   = $(if ($f.FixTier -gt 0) { $f.FixTier } else { $null })
+            fixOn     = $(if ($f.FixAction) { $f.FixOn } else { $null })
+            fixParams = $params
+        }
+    }
+
+    $factsObj = [ordered]@{}
+    foreach ($k in $script:Facts.Keys) { $factsObj[$k] = [string]$script:Facts[$k] }
+
+    $payload = [ordered]@{
+        schemaVersion = 1
+        tool          = [ordered]@{ name = $TOOL_NAME; version = $TOOL_VERSION }
+        caseId        = $CaseId
+        generatedAt   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
+        anonymized    = [bool]$Anonymize
+        machine       = [ordered]@{
+            computerName = $env:COMPUTERNAME
+            role         = $roleTag
+            architecture = $(if ($isLegacy) { 'Interconnect' } else { 'CVD' })
+            ansyslicDir  = $licDir
+            isAdmin      = $isAdmin
+            servers      = @($resolvedServers)
+        }
+        facts         = $factsObj
+        findings      = $jsonFindings
+        # 解決包產生器的硬性規則：只有 CONFIRMED 才允許生成修復動作。
+        # 這裡先算好，讓產生器不必自己重新推導。
+        actionable    = @($jsonFindings | Where-Object {
+                            $_.level -eq 'CONFIRMED' -and $_.fixAction -and $_.fixTier -lt 3
+                          } | ForEach-Object { $_.fixAction } | Select-Object -Unique)
+        notAutomatable= @($jsonFindings | Where-Object { $_.fixTier -eq 3 } |
+                          ForEach-Object { $_.fixAction } | Select-Object -Unique)
+    }
+
+    try {
+        $payload | ConvertTo-Json -Depth 8 | Out-File -FilePath $jsonPath -Encoding utf8 -Force
+    } catch {
+        Write-Host ('  JSON 輸出失敗：' + $_.Exception.Message) -ForegroundColor Red
+        $jsonPath = $null
+    }
+}
+
 Write-Host ('=' * 60) -ForegroundColor White
 Write-Host '  報告已產生' -ForegroundColor Green
 Write-Host ''
 Write-Host ('    ' + $htmlPath)
 Write-Host ('    ' + $txtPath)
+if ($jsonPath) { Write-Host ('    ' + $jsonPath) }
 Write-Host ''
 Write-Host ('  請將其中一份寄至 ' + $VENDOR_MAIL) -ForegroundColor Cyan
 Write-Host ('  並註明案件編號 ' + $CaseId) -ForegroundColor Cyan
