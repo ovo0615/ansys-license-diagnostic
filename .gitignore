@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------
+# 含客戶識別資訊，一律不進版本庫
+# ---------------------------------------------------------------
+
+# 基線檔：含客戶主機名稱、伺服器設定、HostID
+expected.json
+baseline*.json
+*.baseline.json
+
+# 診斷報告：含主機名稱、內網 IP、使用者帳號、feature 清單
+reports/
+AnsysLicense_*.html
+AnsysLicense_*.txt
+
+# 授權憑證與設定，任何情況下都不得公開
+*.lic
+*.opt
+ansyslmd.ini
+*hostid*.txt
+
+# 客戶往來信件
+*.msg
+*.eml
+
+# 原廠診斷輸出
+*diagnostic*.txt
+*diagnostics*.zip
+lmgrd*.log
+ansysli*.log
+FlexNet*Debug*.log
+
+# ---------------------------------------------------------------
+# 一般
+# ---------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+~$*
+*.tmp
+__pycache__/
+*.pyc
