@@ -71,13 +71,16 @@ function Assert-Finding {
         [object[]] $Findings,
         [string] $TitleLike,
         [string] $Level,
+        [string] $DetailLike,
         [switch] $Absent
     )
     $hits = @($Findings | Where-Object {
-        $_.title -like ('*' + $TitleLike + '*') -and (-not $Level -or $_.level -eq $Level)
+        $_.title -like ('*' + $TitleLike + '*') -and (-not $Level -or $_.level -eq $Level) -and
+        (-not $DetailLike -or ([string]$_.detail) -like ('*' + $DetailLike + '*'))
     })
     $want  = if ($Absent) { '不該出現' } else { '應出現' }
     $what  = if ($TitleLike) { '「' + $TitleLike + '」' } else { '任何 ' + $Level + ' 結論' }
+    if ($DetailLike) { $what += '（說明含「' + $DetailLike + '」）' }
     $ok    = if ($Absent) { $hits.Count -eq 0 } else { $hits.Count -gt 0 }
     if ($ok) {
         $script:Pass++
@@ -296,6 +299,27 @@ $f = Invoke-Merge @(
     (New-Node -Name 'WS02')
 )
 Assert-Finding -Case '案例13' -Findings $f -TitleLike '沒有任何連通性測試資料' -Level 'MANUAL'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '案例 14：temp 路徑差異來自 8.3 短檔名時要提醒，其他情況要閉嘴' -ForegroundColor White
+# 開發機上實際遇到的：同一台的 v251 寫 C:/Users/JEFF~1.HON/...、v241 寫
+# C:/Users/jeff.hong/...，指的是同一個目錄。判定仍是【確定】（AEDT 比的是
+# 路徑字串），但要讓看報告的人知道有這個可能，不然他會去找一個不存在的差異。
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -TempDir 'C:\Users\JEFF~1.HON\AppData\Local\Temp')
+    (New-Node -Name 'WS02' -TempDir 'C:\Users\jeff.hong\AppData\Local\Temp')
+)
+Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -Level 'CONFIRMED'
+Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -DetailLike '長短檔名'
+
+# 沒有短檔名時不可以講這一句——不該講的要閉嘴，否則提醒就變成雜訊。
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -TempDir 'C:\Temp')
+    (New-Node -Name 'WS02' -TempDir 'D:\AnsysTemp')
+)
+Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -Level 'CONFIRMED'
+Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -DetailLike '長短檔名' -Absent
 
 # ---------------------------------------------------------------------------
 Write-Host ''

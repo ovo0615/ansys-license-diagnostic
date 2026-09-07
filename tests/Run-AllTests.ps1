@@ -26,7 +26,10 @@ $TestsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $suites = @(
     'Test-AedtClusterMerge.ps1',
-    'Test-AedtClusterConfig.ps1'
+    'Test-AedtClusterConfig.ps1',
+    # 偵測器自己也要被測。Check-Ps51Compat.ps1 若永遠回綠燈，它就只是個
+    # 假保險——曾經真的這樣過：?. 的偵測在 5.1 上是死的，但檢查照樣全過。
+    'Test-Ps51Compat.ps1'
 )
 
 $failed = @()

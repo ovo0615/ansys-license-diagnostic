@@ -868,10 +868,24 @@ function Invoke-MergeMode {
             foreach ($k in $tempMap.Keys) {
                 $detail += '  ' + $k + '  <- ' + (($tempMap[$k]) -join '、') + [Environment]::NewLine
             }
+            # 只要有一個值帶 8.3 短檔名（PROGRA~1、JEFF~1.HON 這種），就提醒一句。
+            # 實際遇過同一台的不同版次，一個寫短檔名一個寫長檔名，指的是同一個目錄。
+            # 判定仍然是【確定】：AEDT 要求的是「路徑字串相同」，而且本工具讀不到
+            # 別台機器的短檔名對應，無從展開比對。講出來讓人自己判斷就好。
+            $shortNameNote = ''
+            foreach ($k in $tempMap.Keys) {
+                if ($k -match '~\d') {
+                    $shortNameNote = [Environment]::NewLine +
+                        '註：上面有路徑使用 8.3 短檔名（含 ~1 這種寫法），' +
+                        '兩者可能其實是同一個目錄的長短檔名兩種寫法。' + [Environment]::NewLine +
+                        '即使如此仍建議統一——AEDT 比的是路徑字串本身，不是展開後的目錄。'
+                    break
+                }
+            }
             Add-Finding -Level 'CONFIRMED' -Title 'temp 目錄各機路徑不同' `
                 -Detail ($detail + [Environment]::NewLine +
                          '串機要求 temp 目錄「每台路徑字串相同、但各自為本機磁碟」。' + [Environment]::NewLine +
-                         '這是實務上最常被漏掉的一項。') `
+                         '這是實務上最常被漏掉的一項。' + $shortNameNote) `
                 -Fix ('在每台的 <安裝路徑>\config\default.cfg 設成同一個值，例如：' + [Environment]::NewLine +
                       "  tempdirectory='C:\Temp'") `
                 -FixAction 'set-temp-directory' -FixOn 'all'
@@ -1484,6 +1498,16 @@ if ($mpiDetected.Count -eq 0) {
         $detail += 'AEDT 安裝目錄裡有 MPI 執行檔，但對應的服務沒有註冊。' + [Environment]::NewLine
     }
     $detail += '純 DSO 分列參數表時不需要 MPI；DDM 或頻點分散一定要。'
+    # 權限不足時服務清單可能不完整（Get-Service 會靜默略過讀不到的項目），
+    # 不能據此說「沒有 MPI」。RSM 那一段本來就是這樣處理的，這裡要一致——
+    # 不一致的話，同一種證據在報告的兩節裡會得到兩種強度的結論。
+    if (-not $isAdmin) {
+        $lvl = 'MANUAL'
+        $detail += [Environment]::NewLine +
+                   '本次不是以系統管理員身分執行，服務清單可能不完整，不能據此斷定沒有安裝。'
+    }
+    # DSO 不需要 MPI，這時連「可疑」都不該報。這一條要放在權限判斷之後，
+    # 因為 DSO 模式下就算讀不到也無所謂——本來就不需要。
     if ($Mode -eq 'DSO') {
         $lvl = 'INFO'
         $detail += [Environment]::NewLine + '本次指定 -Mode DSO，所以不列為問題。'
@@ -1610,36 +1634,61 @@ if ($fwProfiles.Count -gt 0) {
 }
 
 # 有沒有針對串機開的規則
+#
+# $fwRuleReadable 是關鍵：規則列舉在一般權限下可能整個讀不到，
+# 而「讀不到」與「沒有這條規則」是兩件完全不同的事。
+# 不分開的話，權限不足會被講成「防火牆沒放行」——這正是最貴的錯法：
+# 客戶明明設好了，我們叫他去改一個本來就對的東西。
+# 現場驗證清單 A6 要求的就是這一條。
 $fwRuleHits = @()
+$fwRuleReadable = $true
 if ($fwProfiles.Count -gt 0) {
+    # 規則先一次抓回來建索引，不要每個 filter 都 pipe 一次 Get-NetFirewallRule。
+    # 每 pipe 一次就是一次完整查詢，數量一多就爆。
+    # 實測（NODEA，1122 條規則、80 個符合的 filter）：
+    #   逐條 pipe          44.9 秒
+    #   一次抓回來建索引     4.2 秒
+    # 節點收集的預算是 60 秒（現場驗證清單 A9），光這一段就吃掉大半。
+    # filter 的 InstanceID 等於 rule 的 Name／InstanceID，可以直接對。
+    $ruleById = @{}
+    try {
+        foreach ($rr in (Get-NetFirewallRule -ErrorAction Stop)) {
+            if ($rr.InstanceID) { $ruleById[[string]$rr.InstanceID] = $rr }
+        }
+    } catch { $fwRuleReadable = $false }
+
     try {
         foreach ($f in (Get-NetFirewallPortFilter -ErrorAction Stop)) {
             if (@($f.LocalPort) -contains ([string]$RsmPort)) {
-                $r = $f | Get-NetFirewallRule -ErrorAction SilentlyContinue
-                foreach ($rr in @($r)) {
-                    if ($rr.Enabled -and $rr.Direction -eq 'Inbound') {
-                        $fwRuleHits += ('埠 ' + $RsmPort + ' : ' + $rr.DisplayName)
-                    }
+                $rr = $ruleById[[string]$f.InstanceID]
+                if ($rr -and $rr.Enabled -and $rr.Direction -eq 'Inbound') {
+                    $fwRuleHits += ('埠 ' + $RsmPort + ' : ' + $rr.DisplayName)
                 }
             }
         }
-    } catch { }
+    } catch { $fwRuleReadable = $false }
     try {
         foreach ($f in (Get-NetFirewallApplicationFilter -ErrorAction Stop)) {
             if ($f.Program -and $f.Program -match 'ansysedt|hydra_service|mpiexec|smpd') {
-                $r = $f | Get-NetFirewallRule -ErrorAction SilentlyContinue
-                foreach ($rr in @($r)) {
-                    if ($rr.Enabled -and $rr.Direction -eq 'Inbound') {
-                        $fwRuleHits += ('程式 : ' + $rr.DisplayName)
-                    }
+                $rr = $ruleById[[string]$f.InstanceID]
+                if ($rr -and $rr.Enabled -and $rr.Direction -eq 'Inbound') {
+                    $fwRuleHits += ('程式 : ' + $rr.DisplayName)
                 }
             }
         }
-    } catch { }
+    } catch { $fwRuleReadable = $false }
     $fwRuleHits = @($fwRuleHits | Select-Object -Unique)
     if ($fwRuleHits.Count -gt 0) {
         $sec = Add-Section '與串機相關的輸入防火牆規則'
         foreach ($h in $fwRuleHits) { Add-Row $sec $h }
+    } elseif (-not $fwRuleReadable) {
+        Add-Finding -Level 'MANUAL' -Title '讀不到防火牆規則清單，無法判斷有沒有放行' `
+            -Detail ('防火牆設定檔讀得到，但規則清單列舉失敗' +
+                     $(if (-not $isAdmin) { '（本次不是以系統管理員身分執行）' } else { '' }) + '。' +
+                     [Environment]::NewLine +
+                     '這裡「讀不到」不等於「沒有放行」，所以不做任何判斷。') `
+            -Fix ('以系統管理員身分重跑一次；或自行確認 TCP ' + $RsmPort +
+                  '（AnsoftRSMService）與所選 MPI 用的埠是否已放行。')
     } elseif (-not $anyOff) {
         Add-Finding -Level 'SUSPECT' -Title ('防火牆啟用中，但沒看到放行 ' + $RsmPort + ' 或 AEDT 的輸入規則') `
             -Detail ('沒有找到相關規則不代表一定被擋（可能有涵蓋範圍更大的規則），' +
