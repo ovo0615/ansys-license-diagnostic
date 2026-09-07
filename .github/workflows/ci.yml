@@ -41,6 +41,24 @@ jobs:
           }
           if ($fail) { exit 1 }
 
+  tests:
+    name: 測試
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: tests/Run-AllTests.ps1
+        shell: pwsh
+        run: ./tests/Run-AllTests.ps1
+
+  ps51-compat:
+    name: PowerShell 5.1 相容性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: tools/Check-Ps51Compat.ps1
+        shell: pwsh
+        run: ./tools/Check-Ps51Compat.ps1
+
   python-compile:
     name: Python 編譯檢查
     runs-on: ubuntu-latest

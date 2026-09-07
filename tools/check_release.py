@@ -59,6 +59,9 @@ FORBIDDEN = [
     (r'(^|/)ansyslmd\.ini$', '客戶的授權設定檔'),
     (r'\.(pem|key)$|(^|/)\.env', '憑證或環境設定檔'),
     (r'(^|/)AnsysLicense_.*\.(html|txt)$', '診斷報告'),
+    (r'(^|/)AedtCluster_.*\.(html|txt)$', '串機檢查報告'),
+    (r'\.node\.json$', '串機節點報告，含主機名稱與內網 IP'),
+    (r'(^|/)cluster-config/', '串機設定產生器的輸出，含客戶主機名稱與安裝路徑'),
     (r'\.findings\.json$', '機器可讀的診斷結果，含客戶識別資訊'),
 ]
 

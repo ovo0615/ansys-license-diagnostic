@@ -12,6 +12,14 @@ reports/
 AnsysLicense_*.html
 AnsysLicense_*.txt
 
+# 串機檢查的節點報告與彙整報告：含主機名稱、內網 IP、使用者帳號
+AedtCluster_*.txt
+AedtCluster_*.html
+*.node.json
+
+# 串機設定產生器的輸出：含客戶的主機名稱與安裝路徑
+cluster-config/
+
 # 授權憑證與設定，任何情況下都不得公開
 *.lic
 *.opt

@@ -15,6 +15,7 @@ Ansys 軟體跳出「無法連上授權伺服器」時，在客戶端或授權�
 > | --- | --- |
 > | `執行診斷.bat` → `Check-AnsysLicense.ps1` | 授權連不上時找根因（本文件主體） |
 > | `執行串機檢查.bat` → `Test-AedtCluster.ps1` | 兩台以上工作站要用 MPI 串機時，檢查串不起來的原因（見下方[串機檢查工具](#串機檢查工具)） |
+> | `New-AedtClusterConfig.ps1` | 依串機檢查結果產生機器清單與批次求解命令 |
 
 ---
 
@@ -281,11 +282,20 @@ python tools/parse_feature_map.py "C:\path\to\Product To Feature Map.pdf"
 ### 發布前檢查
 
 ```bash
-python tools/check_release.py
+python tools/check_release.py           # 禁止入庫的檔案／客戶識別資訊／編碼
+pwsh -File tools/Check-Ps51Compat.ps1   # PowerShell 5.1 相容性
+pwsh -File tests/Run-AllTests.ps1       # 測試
 ```
 
-檢查禁止入庫的檔案（`feature_map.json`、基線、報告、`.lic`）、殘留的客戶識別資訊、
-以及編碼規則（`.ps1` 要有 UTF-8 BOM、`.bat` 要全 ASCII）。CI 跑的是同一支。
+`check_release.py` 檢查禁止入庫的檔案（`feature_map.json`、基線、報告、`.node.json`、
+`.lic`）、殘留的客戶識別資訊、以及編碼規則（`.ps1` 要有 UTF-8 BOM、`.bat` 要全 ASCII）。
+
+`Check-Ps51Compat.ps1` 用 PowerShell 自己的剖析器找 7.x 才有的語法
+（`??`、`?.`、`&&`、三元運算子、7.x 專用參數），不是字串比對——
+出現在註解或字串裡的 `&&` 不會誤報。確認是誤判時在該行加 `ps51-ok` 標記。
+它看不到的部分：7.x 新增的 cmdlet、5.1 缺的 .NET API、以及行為差異。
+
+CI 跑的是同樣這三支。
 
 ### 踩過的坑
 
@@ -395,15 +405,47 @@ HPC Pack 額外開放的核心是 `2 × 4ⁿ`。**手上 pack 不多時，攤到
 - **不判斷串機划不划算。** 串機能不能贏過單機取決於網路頻寬與模型型態，
   DDM 在千兆網路上常常比單機還慢。
 
+### 產生機器清單與批次命令
+
+檢查過關之後，用 `New-AedtClusterConfig.ps1` 把設定產出來：
+
+```powershell
+.\New-AedtClusterConfig.ps1 -From .\reports -Project D:\work\ant.aedt
+```
+
+輸出到 `cluster-config\`：
+
+| 檔案 | 內容 |
+| --- | --- |
+| `machines.txt` | `-MachineList file=` 用的機器清單，一行一台 |
+| `verify-batchoptions.cmd` | **第一次使用前必跑**，對照該版本實際支援的選項 |
+| `run-batch.cmd` | 批次分散求解命令，**預設是註解掉的** |
+| `待辦清單.txt` | 還缺什麼、被排除的機器與原因 |
+
+沒通過基本檢查的機器（沒有 AEDT、RSM 沒跑、MPI 沒跑）不會被列進機器清單，
+要照樣列進去得加 `-IncludeUnready`。
+
+**求解命令刻意是註解掉的。** AEDT 命令列選項的確切拼法在版本之間有差異，
+本工具依公開文件產生，沒辦法替客戶那個版本背書——猜錯的批次檔會直接失敗，
+比沒有還糟。跑過 `verify-batchoptions.cmd` 確認後再解開。
+
+`.acf` 本工具不產生，理由與做法寫在待辦清單裡：它的欄位結構沒有公開規格，
+猜出來的檔案匯入後可能**靜默套用錯誤設定**，那比沒有 acf 更難查。
+正確做法是在 GUI 裡設定好一次後匯出，之後每台匯入同一份。
+
 ### 測試
 
 ```powershell
-.\tests\Test-AedtClusterMerge.ps1
+.\tests\Run-AllTests.ps1
 ```
 
-彙整模式吃的是 `.node.json`，不碰真實機器，所以可以完全用合成資料測
-（目前 40 項，涵蓋跨機比對的每一條規則與純計算函式）。
-**節點收集那一半必須在真的 Windows 工作站上驗**，見設計文件第七節列的待驗證項目。
+67 項，涵蓋彙整模式的每一條跨機比對規則、純計算函式，以及產生器的輸出安全性
+（`.cmd` 全 ASCII、百分號跳脫、求解命令確實是註解狀態）。
+這些都不碰真實機器、不需要 Ansys、不需要 Windows——刻意設計成這樣才能每次提交都跑。
+
+**沒有被測到的**：`Check-AnsysLicense.ps1` 全部，以及 `Test-AedtCluster.ps1`
+的節點收集模式。這些只能在真的 Windows 工作站上驗——
+逐項步驟見 **[串機工具-現場驗證清單](docs/串機工具-現場驗證清單.md)**，帶去現場照著打勾。
 
 ---
 
