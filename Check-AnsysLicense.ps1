@@ -38,7 +38,8 @@
     此模式不做故障判定。
 
 .PARAMETER Anonymize
-    去識別化。把使用者帳號、內網 IP、第三方軟體名稱雜湊處理後才寫進報告。
+    去識別化。把電腦名稱、授權伺服器名稱、使用者帳號、內網 IP、
+    第三方軟體名稱雜湊處理後才寫進報告。
     供資安要求較嚴格的單位使用。
 
 .PARAMETER Server
@@ -260,15 +261,27 @@ function Add-Row {
 # ============================================================================
 #  去識別化
 # ============================================================================
+$script:SensitiveHosts = @()
+$script:AnonymizationKey = $null
+
 function Protect-Value {
     param([string] $Value, [string] $Prefix = 'X')
     if (-not $Anonymize)                   { return $Value }
     if ([string]::IsNullOrWhiteSpace($Value)) { return $Value }
-    $md5   = [System.Security.Cryptography.MD5]::Create()
-    $bytes = $md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value.ToLower()))
-    $hex   = ''
-    foreach ($b in $bytes[0..3]) { $hex += $b.ToString('x2') }
-    $md5.Dispose()
+    if ($null -eq $script:AnonymizationKey) {
+        $script:AnonymizationKey = New-Object byte[] 32
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($script:AnonymizationKey) } finally { $rng.Dispose() }
+    }
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    try {
+        $hmac.Key = $script:AnonymizationKey
+        $bytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value.ToLowerInvariant()))
+    } finally {
+        $hmac.Dispose()
+    }
+    $hex = ''
+    foreach ($b in $bytes[0..7]) { $hex += $b.ToString('x2') }
     return ($Prefix + '-' + $hex)
 }
 
@@ -283,6 +296,16 @@ function Protect-Text {
     # 目前使用者帳號
     if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
         $t = $t -replace [regex]::Escape($env:USERNAME), (Protect-Value -Value $env:USERNAME -Prefix 'user')
+    }
+    # 本機與授權伺服器名稱。先換較長的名稱，避免短名稱是完整網域名稱的子字串。
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        $t = $t -replace [regex]::Escape($env:COMPUTERNAME), (Protect-Value -Value $env:COMPUTERNAME -Prefix 'pc')
+    }
+    foreach ($hostName in @($script:SensitiveHosts | Where-Object { $_ } |
+                              Sort-Object { ([string]$_).Length } -Descending |
+                              Select-Object -Unique)) {
+        $t = $t -replace [regex]::Escape([string]$hostName),
+                         (Protect-Value -Value ([string]$hostName) -Prefix 'host')
     }
     return $t
 }
@@ -688,6 +711,14 @@ if ($Server -and $Server.Count -gt 0) {
 }
 
 Write-Step ('解析到 ' + $resolvedServers.Count + ' 個授權伺服器設定')
+
+# 把埠號@主機名稱拆開，供所有報告格式統一去識別化。
+$script:SensitiveHosts = @($resolvedServers | ForEach-Object {
+    $serverText = [string]$_
+    $at = $serverText.LastIndexOf('@')
+    $hostName = if ($at -ge 0) { $serverText.Substring($at + 1) } else { $serverText }
+    $hostName.Trim().Trim('[', ']')
+} | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 
 # ============================================================================
 #  階段 2：連線測試
@@ -1780,7 +1811,7 @@ if ($isServer) {
 }
 if ($Anonymize) {
     TB ''
-    TB '  已啟用去識別化：使用者帳號、內網 IP、第三方程式名稱已雜湊處理。'
+    TB '  已啟用去識別化：電腦名稱、授權伺服器名稱、使用者帳號、內網 IP 與第三方程式名稱已雜湊處理。'
 } else {
     TB ''
     TB '  提示：若貴司資安規範不允許外傳上述資訊，可加上 -Anonymize 參數重新執行。'
@@ -1833,7 +1864,7 @@ TB ('報告產生時間 ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '　工�
 TB ('本工具全程唯讀，未修改本機任何設定。')
 
 try {
-    $tb.ToString() | Out-File -FilePath $txtPath -Encoding utf8 -Force
+    (Protect-Text $tb.ToString()) | Out-File -FilePath $txtPath -Encoding utf8 -Force
 } catch {
     Write-Host ('  文字報告寫入失敗：' + $_.Exception.Message) -ForegroundColor Red
 }
@@ -1890,7 +1921,7 @@ HB 'feature 使用數量、License 檔案的 SERVER 行（<b>不含授權碼與 
 if ($isServer) { HB '、占用授權連接埠的程式名稱' }
 HB '。<br>'
 if ($Anonymize) {
-    HB '<b>已啟用去識別化</b>：使用者帳號、內網 IP、第三方程式名稱均已雜湊處理。<br>'
+    HB '<b>已啟用去識別化</b>：電腦名稱、授權伺服器名稱、使用者帳號、內網 IP 與第三方程式名稱均已雜湊處理。<br>'
 } else {
     HB '若貴司資安規範不允許外傳上述資訊，可加上 <code>-Anonymize</code> 參數重新執行。<br>'
 }
@@ -1936,7 +1967,7 @@ HB ('<footer>報告產生時間 ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') +
 HB '</div></body></html>'
 
 try {
-    $hb.ToString() | Out-File -FilePath $htmlPath -Encoding utf8 -Force
+    (Protect-Text $hb.ToString()) | Out-File -FilePath $htmlPath -Encoding utf8 -Force
 } catch {
     Write-Host ('  HTML 報告寫入失敗：' + $_.Exception.Message) -ForegroundColor Red
 }
@@ -1995,7 +2026,8 @@ if ($Json) {
     }
 
     try {
-        $payload | ConvertTo-Json -Depth 8 | Out-File -FilePath $jsonPath -Encoding utf8 -Force
+        $jsonText = $payload | ConvertTo-Json -Depth 8
+        (Protect-Text $jsonText) | Out-File -FilePath $jsonPath -Encoding utf8 -Force
     } catch {
         Write-Host ('  JSON 輸出失敗：' + $_.Exception.Message) -ForegroundColor Red
         $jsonPath = $null

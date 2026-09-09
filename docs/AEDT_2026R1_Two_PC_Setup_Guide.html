@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AEDT 2026 R1 兩台電腦串機操作說明</title>
+  <style>
+    :root { --navy:#17365d; --blue:#1769aa; --green:#18794e; --red:#b42318; --ink:#17212b; --line:#d8dee6; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:#f3f5f7; font-family:"Calibri","Microsoft JhengHei",sans-serif; font-size:17px; line-height:1.65; }
+    header { color:#fff; background:linear-gradient(120deg,#102b4e,#1769aa); padding:34px 20px 30px; }
+    header .inner, main, footer, nav .inner { width:min(980px,calc(100% - 32px)); margin:0 auto; }
+    h1 { margin:0 0 8px; font-size:clamp(28px,5vw,43px); line-height:1.2; }
+    header p { margin:5px 0; }
+    .route { margin-top:20px; padding:14px 18px; color:var(--ink); background:#fff; border-left:7px solid #60c689; border-radius:8px; font-weight:700; }
+    nav { position:sticky; top:0; z-index:10; overflow-x:auto; white-space:nowrap; background:rgba(255,255,255,.97); border-bottom:1px solid var(--line); box-shadow:0 2px 8px #0001; }
+    nav .inner { padding:9px 0; }
+    nav a { display:inline-block; padding:7px 11px; color:var(--navy); text-decoration:none; font-weight:700; }
+    main { padding:26px 0 50px; }
+    section { margin:20px 0; padding:24px; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 3px 12px #1f2d3d0f; }
+    h2 { margin:0 0 16px; color:var(--navy); font-size:27px; }
+    h3 { margin:24px 0 9px; color:var(--blue); font-size:21px; }
+    .step-title { display:flex; gap:12px; align-items:center; }
+    .step-no { display:inline-grid; place-items:center; min-width:40px; height:40px; color:#fff; background:var(--blue); border-radius:50%; font-weight:800; }
+    table { width:100%; border-collapse:collapse; margin:12px 0; }
+    th, td { padding:10px 12px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:#fff; background:var(--navy); }
+    tr:nth-child(even) td { background:#f8fafc; }
+    code, pre { font-family:Consolas,"Courier New",monospace; }
+    code { color:#8b1d1d; }
+    .cmd { position:relative; margin:10px 0 15px; }
+    pre { overflow-x:auto; margin:0; padding:17px 96px 17px 17px; color:#f7fbff; background:#17212b; border-radius:8px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+    .copy { position:absolute; top:9px; right:9px; padding:6px 10px; color:#fff; background:#31516e; border:1px solid #66819a; border-radius:6px; cursor:pointer; font-family:inherit; }
+    .check { display:grid; grid-template-columns:28px 1fr; gap:7px; margin:9px 0; }
+    .check input { width:19px; height:19px; margin-top:5px; accent-color:var(--green); }
+    .ok, .warn, .danger, .note { padding:13px 16px; margin:13px 0; border-radius:7px; }
+    .ok { background:#eaf8f0; border-left:6px solid var(--green); }
+    .warn { background:#fff5cc; border-left:6px solid #d99b00; }
+    .danger { background:#fff0ee; border-left:6px solid var(--red); }
+    .note { background:#eef6fc; border-left:6px solid var(--blue); }
+    .actions button { margin:8px 8px 0 0; padding:9px 14px; color:#fff; background:var(--navy); border:0; border-radius:7px; cursor:pointer; font-family:inherit; }
+    footer { padding:0 0 35px; color:#59636e; text-align:center; }
+    @media (max-width:650px) { body{font-size:16px} section{padding:18px} table{display:block;overflow-x:auto} }
+    @media print { body{background:#fff;font-size:11pt} nav,.copy,.actions{display:none!important} header{padding:18px 0;background:#fff;color:#000;border-bottom:2px solid #000} header .inner,main,footer{width:100%} .route{border:1px solid #777} section{break-inside:avoid;box-shadow:none;border-color:#aaa} pre{color:#000;background:#f3f3f3;border:1px solid #999} }
+  </style>
+</head>
+<body>
+  <header><div class="inner">
+    <h1>AEDT 2026 R1 兩台電腦串機</h1>
+    <p>今天內部測試、明天客戶端操作皆可使用</p>
+    <p>適用：兩台 Windows 工作站，未使用 Windows HPC Scheduler</p>
+    <div class="route">正確路線：Electromagnetics RSM ＋ Intel MPI ＋ AEDT Machine List</div>
+  </div></header>
+  <nav><div class="inner"><a href="#before">準備</a><a href="#s1">1．確認</a><a href="#s2">2．RSM</a><a href="#s3">GUI ①</a><a href="#s4">GUI ②</a><a href="#s5">GUI ③</a><a href="#s6">GUI ④</a><a href="#repair">GUI ⑤ 修復</a><a href="#s7">求解</a><a href="#trouble">故障</a><a href="#checklist">驗收</a></div></nav>
+  <main>
+    <section id="before">
+      <h2>開始前只要準備這些</h2>
+      <table><thead><tr><th>項目</th><th>要求</th></tr></thead><tbody>
+        <tr><td>Windows</td><td>兩台使用相同版本與更新層級。</td></tr>
+        <tr><td>AEDT</td><td>兩台安裝 AEDT 2026 R1，而且安裝路徑相同。</td></tr>
+        <tr><td>RSM</td><td>安裝 Electromagnetics RSM。它不是 Ansys Remote Solve Manager。</td></tr>
+        <tr><td>MPI</td><td>使用 AEDT 支援的相同 Intel MPI。一般兩台工作站不要選 Microsoft MPI。</td></tr>
+        <tr><td>權限</td><td>使用實際執行 AEDT 的帳號開啟 GUI；只有按「套用完整修復」時會跳出系統管理員權限確認。</td></tr>
+        <tr><td>測試模型</td><td>使用幾分鐘內能完成的小模型複本。</td></tr>
+        <tr><td>額外套件</td><td>不用安裝任何額外套件，也不用輸入命令。</td></tr>
+      </tbody></table>
+      <div class="danger"><strong>不要做：</strong>不要關閉防毒、不要永久關閉防火牆、不要修改 <code>LocalAccountTokenFilterPolicy</code>、不要使用 <code>taskkill</code>。</div>
+    </section>
+
+    <section id="s1">
+      <h2 class="step-title"><span class="step-no">1</span>確認兩台電腦名稱與版本</h2>
+      <p><strong>只開 GUI，不要開命令視窗。</strong></p>
+      <ol>
+        <li>在兩台電腦上找到解壓縮後的 <code>Run-MpiToolkit-GUI.bat</code>。</li>
+        <li>雙擊該檔案開啟 GUI，不需要輸入任何指令。</li>
+        <li>若出現「使用者帳戶控制」，按「是」。</li>
+        <li>切到「① 節點檢查」。畫面上方會顯示本機電腦名稱。</li>
+        <li>互相記下兩台顯示的名稱。以下範例稱為 <code>WS01</code> 與 <code>WS02</code>。</li>
+      </ol>
+      <div class="note">Windows、AEDT 與安裝路徑是否一致，稍後由 GUI 自動檢查。</div>
+    </section>
+
+    <section id="s2">
+      <h2 class="step-title"><span class="step-no">2</span>啟動並註冊 RSM</h2>
+      <ol><li>兩台都從 Windows「開始」搜尋並執行 <strong>Register with RSM</strong>。</li><li>看到註冊完成後按「確定」。</li><li>回到已開啟的 GUI。RSM 服務與 TCP 32958 會在節點檢查時自動確認。</li></ol>
+      <div class="ok"><strong>通過：</strong>GUI 報告顯示 RSM 正在執行，而且 TCP 32958 正常。</div>
+      <div class="warn">若公司改過 RSM Port，AEDT Remote Analysis 與兩台 RSM 必須使用同一個值。</div>
+    </section>
+
+    <section id="s3">
+      <h2 class="step-title"><span class="step-no">3</span>在兩台執行串機檢查</h2>
+      <p><code>C:\AnsysWork\MpiToolkit</code> 不是 Ansys 預先建立的資料夾。兩台電腦都要自行建立，再把收到的 ZIP <strong>全部解壓縮</strong>到這裡；「完整工具」不是指單一檔案。</p>
+      <ol>
+        <li>在 ZIP 上按右鍵，選擇「內容」。如果看得到「解除封鎖」，請勾選後按「確定」。</li>
+        <li>開啟檔案總管，在 <code>C:\</code> 建立 <code>AnsysWork</code>，再於其中建立 <code>MpiToolkit</code>。</li>
+        <li>把 ZIP 內的全部檔案解壓縮到 <code>C:\AnsysWork\MpiToolkit</code>。</li>
+        <li>確認資料夾內有 <code>START_HERE.html</code>、<code>Run-MpiToolkit-GUI.bat</code> 與 <code>MpiToolkit-GUI.ps1</code>。其他支援檔案不要移動或改名。</li>
+      </ol>
+      <div class="note">若公司權限不允許在 <code>C:\</code> 建立資料夾，可用檔案總管改建在 <code>D:\AnsysWork\MpiToolkit</code>。</div>
+      <div class="warn">所有 Ansys 工作路徑與檔名都只能使用英文字母、數字、底線或連字號，不要包含中文。</div>
+      <h3>直接使用 GUI</h3>
+      <ol>
+        <li>雙擊 <code>Run-MpiToolkit-GUI.bat</code> 開啟 GUI。</li>
+        <li>若出現「使用者帳戶控制」，按「是」。</li>
+        <li>在「① 節點檢查」輸入案件編號。兩台必須填完全相同的值。</li>
+        <li>「對端電腦名稱」填另一台電腦的 <code>hostname</code>。</li>
+        <li>模式選擇 <code>DDM</code>；報告資料夾可直接使用預設值，或按「瀏覽…」選擇。</li>
+        <li>按「開始節點檢查」，等待底部顯示「完成：節點檢查」。</li>
+        <li>按「開啟輸出資料夾」，確認有 <code>*.node.json</code>。</li>
+        <li>另一台用相同步驟執行，但「對端電腦名稱」要改填第一台。</li>
+      </ol>
+      <div class="ok"><strong>不用輸入命令：</strong>GUI 會在背景完成檢查，使用者只要填欄位並按按鈕。</div>
+      <h3>確認工具執行完成</h3>
+      <ol>
+        <li>畫面最後應顯示報告已產生，且沒有紅色的腳本錯誤。</li>
+        <li>在兩台分別開啟 <code>C:\AnsysWork\MpiToolkit\reports_raw</code>。</li>
+        <li>確認每台都有一個檔名以 <code>AedtCluster_</code> 開頭、以 <code>.node.json</code> 結尾的檔案。</li>
+        <li>不要修改或用 Word 另存這個 JSON；下一步要直接複製原始檔案。</li>
+      </ol>
+      <div class="ok"><strong>通過：</strong>兩台有相同 Windows、AEDT 與 Intel MPI；RSM 執行中；TCP 32958 為 OK；temp 路徑相同且皆為本機磁碟。</div>
+      <div class="note">Intel MPI 的帳密註冊由 GUI「⑤ 連線修復」執行；不需要自行輸入 <code>mpiexec</code> 命令。</div>
+    </section>
+
+    <section id="s4">
+      <h2 class="step-title"><span class="step-no">4</span>把兩台報告放在一起彙整</h2>
+      <ol><li>選擇其中一台作為彙整電腦，例如 WS01。</li><li>在該台建立 <code>C:\AnsysWork\MpiToolkit\merge_input</code>。</li><li>從 WS01 的 <code>reports_raw</code> 複製 WS01 的 <code>*.node.json</code> 進去。</li><li>使用公司允許的網路分享或 USB，把 WS02 的 <code>*.node.json</code> 複製到同一個 <code>merge_input</code>。</li><li>確認資料夾內剛好有本次兩台電腦各一個 <code>.node.json</code>，不要混入舊案件檔案。</li><li>開啟 GUI 的「② 彙整報告」，按「瀏覽…」選擇 <code>merge_input</code> 與輸出資料夾。</li><li>按「開始彙整」，完成後按「開啟輸出資料夾」，閱讀最新的 <code>.txt</code>。</li></ol>
+      <p>完成後開啟 <code>C:\AnsysWork\MpiToolkit\merged_raw</code>，先閱讀最新的 <code>.txt</code> 彙整報告。</p>
+      <div class="ok"><strong>通過：</strong>沒有「案件編號不一致」、「作業系統版本各機不同」、「沒有共通 AEDT」、「RSM 沒有執行」、「沒有共同 MPI」或「連線測試失敗」等【確定】項目。</div>
+    </section>
+
+    <section id="s5">
+      <h2 class="step-title"><span class="step-no">5</span>GUI ③：建立串機設定</h2>
+      <p><strong>這一步一定要做。彙整通過後，不要直接跳到 AEDT。</strong></p>
+      <ol>
+        <li>切到 GUI 的「③ 建立串機設定」。</li>
+        <li>在「節點 JSON 資料夾」按「瀏覽…」，選擇放有兩台 <code>*.node.json</code> 的 <code>merge_input</code>。</li>
+        <li>在「AEDT 小模型複本」按「瀏覽…」，選擇今天要測試的 <code>.aedt</code> 檔案。</li>
+        <li>「設定輸出資料夾」使用預設的 <code>cluster_config</code>，或按「瀏覽…」選擇其他 ASCII 路徑。</li>
+        <li>初次測試使用 <code>Tasks＝1</code>、<code>Cores＝4</code>、<code>RAM＝90％</code>。</li>
+        <li>按「建立串機設定」。</li>
+        <li>等待下方顯示「完成：產生設定檔」。</li>
+        <li>按「開啟輸出資料夾」，確認有 <code>machines.txt</code>、<code>verify-batchoptions.cmd</code> 與 <code>待辦清單.txt</code>。</li>
+      </ol>
+      <div class="ok"><strong>通過：</strong><code>machines.txt</code> 內有兩台電腦，而且沒有任何一台被標示為排除。</div>
+      <div class="warn">若按鈕拒絕建立，先回到「② 彙整報告」處理所有【確定】問題，不要勉強跳過。</div>
+    </section>
+
+    <section id="s6">
+      <h2 class="step-title"><span class="step-no">6</span>GUI ④：套用到 AEDT 並驗證</h2>
+      <ol>
+        <li>切到 GUI 的「④ 套用與驗證」。</li>
+        <li>按「驗證命令選項」，等待兩個 AEDT Help 視窗依序開啟；看完第一個並關閉後，才會出現第二個。</li>
+        <li>按「開啟 AEDT 小模型」。</li>
+        <li>在 AEDT 選擇 <strong>Tools ＞ Options ＞ HPC and Analysis Options</strong>。</li>
+        <li>Options 頁設定 <code>MPI Vendor = Intel</code>。</li>
+        <li><code>MPI Version</code> 選 <code>Default</code>，或兩台共同安裝的版本。</li>
+        <li>新增或複製 Analysis Configuration，再按 <strong>Edit</strong>。</li>
+        <li>在 Machines 頁加入兩台電腦，各設 <code>4 Cores</code>、<code>RAM 90％</code>，並勾選 Enabled。</li>
+        <li>選取兩台並按 <strong>Test Machines</strong>。</li>
+      </ol>
+      <div class="ok"><strong>通過：</strong>Test Machines 對兩台都沒有連線或註冊錯誤。</div>
+      <div class="warn"><strong>Test Machines 通過不等於串機完成。</strong>仍須跑真正的小模型。</div>
+    </section>
+
+    <section id="s7">
+      <h2 class="step-title"><span class="step-no">7</span>跑兩次小模型</h2>
+      <h3>7.1　先跑單機雙程序</h3>
+      <ol><li>只選 WS01，但配置兩個 process／task。</li><li>開始求解並確認完成。</li></ol>
+      <h3>7.2　再跑 WS01＋WS02</h3>
+      <ol><li>切換成含兩台的 Analysis Configuration。</li><li>使用與明天相同的求解類型。明天跑 DDM，今天就必須測 DDM。</li><li>開始求解。</li><li>在兩台工作管理員確認都有 solver process，CPU 或記憶體有活動。</li><li>查看 Messages、Solution Profile 或 batch log，確認兩台節點與實際 distribution type。</li><li>確認求解完成，並與單機主要結果比較。</li></ol>
+      <div class="ok"><strong>真正通過：</strong>兩台都有求解程序＋記錄顯示兩台節點＋求解完成＋主要結果合理一致。</div>
+      <div class="note">雙機比單機慢不一定是錯誤。小模型及 DDM 容易被網路延遲抵銷。</div>
+    </section>
+
+    <section id="repair">
+      <h2>GUI ⑤：TEMP 不一致或求解卡住時修復</h2>
+      <p><strong>只有節點／彙整報告顯示 TEMP 不一致，或求解卡在 Determining memory availability 時才執行。</strong></p>
+      <ol>
+        <li>兩台都開啟 GUI，切到「⑤ 連線修復」。</li>
+        <li>「共同暫存路徑」保持 <code>C:\AnsysWork\AedtTemp</code>。兩台必須完全相同，但各自建立在本機磁碟。</li>
+        <li>「對端電腦名稱」填另一台電腦名稱。</li>
+        <li>按「套用完整修復（管理員）」。</li>
+        <li>Windows UAC 出現時按「是」。不需要輸入任何指令。</li>
+        <li>看到「完整修復完成」後，在另一台重複相同步驟。</li>
+        <li>按「註冊 MPI 帳密並驗證」。</li>
+        <li>Windows 帳密視窗使用預設帳號，輸入目前登入 Windows 的密碼。網域帳號格式為 <code>Domain\user</code>；不同網域且兩台已建立相同本機帳密時可用 <code>.\User</code>。</li>
+        <li>看到「Intel MPI 帳密註冊完成，對端驗證成功」。兩台都各執行一次。</li>
+        <li>儲存工作，兩台都重新啟動 Windows，讓 TEMP、RSM 與 MPI 設定完整生效。</li>
+        <li>兩台回到「① 節點檢查」重新執行；再彙整一次，確認 TEMP 路徑相同。</li>
+      </ol>
+      <div class="ok"><strong>修復內容：</strong>備份 <code>default.cfg</code>、建立可寫的本機 TEMP、統一 <code>tempdirectory</code>、啟動 RSM／Intel Hydra，並固定下列連接埠。</div>
+      <table><thead><tr><th>用途</th><th>TCP 連接埠</th><th>允許範圍</th></tr></thead><tbody>
+        <tr><td>RSM</td><td><code>32958</code></td><td>網域／私人網路的本機子網路</td></tr>
+        <tr><td>AnsoftCOM</td><td><code>55000–55499</code></td><td>網域／私人網路的本機子網路</td></tr>
+        <tr><td>Intel MPI</td><td><code>55500–55999</code></td><td>網域／私人網路的本機子網路</td></tr>
+        <tr><td>Intel Hydra</td><td>依本機服務自動偵測，通常為 <code>8680</code></td><td>網域／私人網路的本機子網路</td></tr>
+      </tbody></table>
+      <div class="note">備份放在工具內的 <code>repair_backup</code>；結果放在 <code>repair_reports</code>。修復只新增／更新工具專用的允許規則，不會關閉 Windows 防火牆，也不會更改 hosts。</div>
+      <div class="warn"><strong>密碼安全：</strong>GUI 使用 Windows 的密碼遮罩視窗，密碼只透過標準輸入交給 Intel MPI，完成後立即清除；不放進命令列，不寫入報告或檔案。</div>
+    </section>
+
+    <section id="trouble">
+      <h2>失敗時照這張表處理</h2>
+      <table><thead><tr><th>症狀</th><th>先檢查</th></tr></thead><tbody>
+        <tr><td>找不到遠端 RSM</td><td>RSM 是否 Running、是否 Register with RSM、TCP 32958、兩邊 Port。</td></tr>
+        <tr><td>Test Machines 失敗</td><td>主機名稱解析、Windows／AEDT 版本與路徑、RSM 註冊、防火牆例外。</td></tr>
+        <tr><td>只有 WS01 在算</td><td>Configuration 是否含 WS02、setup 是否允許該 distribution type、模型是否太小。</td></tr>
+        <tr><td>DSO 成功但 DDM 失敗</td><td>DSO variations 可能沒用 MPI。檢查 Intel MPI、Hydra、MPI Port 與安裝路徑。</td></tr>
+        <tr><td>MPI 啟動失敗</td><td>Intel MPI 版本是否相同、AEDT 是否選 Intel，並於 GUI「⑤」重新執行「註冊 MPI 帳密並驗證」。</td></tr>
+        <tr><td>卡在 Determining memory availability</td><td>先用 Cancel Analysis；再於兩台執行 GUI「⑤」的完整修復與 MPI 帳密驗證，完成後重新啟動兩台 Windows。</td></tr>
+        <tr><td>停在 ABORTING</td><td>等待乾淨取消。不要用 <code>taskkill</code>；確認遠端 HFSS／HPC 授權已歸還後再重試。</td></tr>
+        <tr><td>其他求解卡住</td><td>查看 Messages、Profile 與 log。使用 Cancel Analysis，不要用 <code>taskkill</code>。</td></tr>
+      </tbody></table>
+      <div class="danger"><strong>防火牆：</strong>正式設定保持啟用並加入例外。暫時停用只用來隔離特定問題，測完立即恢復。</div>
+    </section>
+
+    <section id="checklist">
+      <h2>明天出發前驗收</h2>
+      <div class="check"><input type="checkbox"><span>Windows、AEDT、安裝路徑與 Intel MPI 一致。</span></div>
+      <div class="check"><input type="checkbox"><span>兩台 RSM 都是 Running，並完成 Register with RSM。</span></div>
+      <div class="check"><input type="checkbox"><span>兩台互測 TCP 32958 成功。</span></div>
+      <div class="check"><input type="checkbox"><span>兩台都完成「註冊 MPI 帳密並驗證」，而且對端驗證成功。</span></div>
+      <div class="check"><input type="checkbox"><span>兩台 <code>tempdirectory</code> 都是 <code>C:\AnsysWork\AedtTemp</code>，而且各自可寫入。</span></div>
+      <div class="check"><input type="checkbox"><span>彙整沒有【確定】錯誤。</span></div>
+      <div class="check"><input type="checkbox"><span>AEDT Test Machines 兩台通過。</span></div>
+      <div class="check"><input type="checkbox"><span>單機雙程序小模型完成。</span></div>
+      <div class="check"><input type="checkbox"><span>雙機小模型完成，兩台都有 solver process。</span></div>
+      <div class="check"><input type="checkbox"><span>Messages／Profile／log 證明使用兩台與正確 distribution type。</span></div>
+      <div class="actions"><button onclick="window.print()">列印／另存 PDF</button><button onclick="resetChecks()">清除勾選</button></div>
+    </section>
+  </main>
+  <footer><p>虎門科技股份有限公司｜依 Ansys Electronics Desktop 2026 R1 Help 整理</p></footer>
+  <script>
+    function showCopyResult(button,text){var old=button.textContent;button.textContent=text;setTimeout(function(){button.textContent=old},1500)}
+    function fallbackCopy(text){
+      var area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.opacity='0';
+      document.body.appendChild(area);area.focus();area.select();
+      var ok=false;try{ok=document.execCommand('copy')}catch(error){ok=false}document.body.removeChild(area);return ok;
+    }
+    document.querySelectorAll('.copy').forEach(function(button){button.addEventListener('click',function(){
+      var text=button.previousElementSibling.innerText;
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){showCopyResult(button,'已複製')}).catch(function(){showCopyResult(button,fallbackCopy(text)?'已複製':'請手動複製')});
+      }else{showCopyResult(button,fallbackCopy(text)?'已複製':'請手動複製')}
+    })});
+    var boxes=Array.prototype.slice.call(document.querySelectorAll('.check input'));
+    boxes.forEach(function(box,index){try{box.checked=localStorage.getItem('aedt-guide-check-'+index)==='1'}catch(error){}box.addEventListener('change',function(){try{localStorage.setItem('aedt-guide-check-'+index,box.checked?'1':'0')}catch(error){}})});
+    function resetChecks(){boxes.forEach(function(box,index){box.checked=false;try{localStorage.removeItem('aedt-guide-check-'+index)}catch(error){}})}
+  </script>
+</body>
+</html>

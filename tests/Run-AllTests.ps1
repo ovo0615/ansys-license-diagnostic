@@ -27,6 +27,9 @@ $TestsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $suites = @(
     'Test-AedtClusterMerge.ps1',
     'Test-AedtClusterConfig.ps1',
+    'Test-Anonymization.ps1',
+    'Test-AedtClusterRepair.ps1',
+    'Test-Gui.ps1',
     # 偵測器自己也要被測。Check-Ps51Compat.ps1 若永遠回綠燈，它就只是個
     # 假保險——曾經真的這樣過：?. 的偵測在 5.1 上是死的，但檢查照樣全過。
     'Test-Ps51Compat.ps1'
@@ -41,8 +44,16 @@ foreach ($s in $suites) {
         $failed += $s
         continue
     }
-    & $p
-    if ($LASTEXITCODE -ne 0) { $failed += $s }
+    try {
+        $global:LASTEXITCODE = 0
+        & $p
+        $suiteExitCode = $LASTEXITCODE
+        if ($suiteExitCode -ne 0) { $failed += $s }
+    } catch {
+        Write-Host ('測試發生例外：' + $s) -ForegroundColor Red
+        Write-Host ('  ' + $_.Exception.Message) -ForegroundColor Red
+        $failed += $s
+    }
 }
 
 Write-Host ('=' * 60) -ForegroundColor White

@@ -82,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File .\Check-AnsysLicense.ps1
 | `-Server <埠@主機[,...]>` | 只測指定的伺服器，不動用戶端設定。用來驗證特定一台 |
 | `-SaveBaseline` | 在系統正常時建立基線，日後故障可做變更比對 |
 | `-Expected <路徑>` | 指定基線檔，預設抓腳本旁的 `expected.json` |
-| `-Anonymize` | 去識別化：使用者帳號、內網 IP、第三方程式名稱雜湊處理 |
+| `-Anonymize` | 去識別化：電腦名稱、授權伺服器名稱、使用者帳號、內網 IP、第三方程式名稱雜湊處理 |
 | `-NoCheckout` | 不做實際取得授權的測試，只觀察 |
 | `-Json` | 另外輸出機器可讀的 findings JSON（見下方） |
 | `-OutDir <路徑>` | 報告輸出目錄，預設 `reports\` |
@@ -252,7 +252,8 @@ python tools/parse_feature_map.py "C:\path\to\Product To Feature Map.pdf"
 不受 `-Anonymize` 影響——報告是要寄出去的，憑證不能跟著走。
 
 報告第一頁會列出該份報告實際包含哪些資訊，讓人確認後再決定是否外傳。
-資安要求較嚴格時加上 `-Anonymize`，使用者帳號、內網 IP、第三方程式名稱會雜湊處理。
+資安要求較嚴格時加上 `-Anonymize`，電腦名稱、授權伺服器名稱、使用者帳號、
+內網 IP、第三方程式名稱會雜湊處理。文字、HTML 與 JSON 輸出套用相同規則。
 
 ---
 
@@ -358,6 +359,9 @@ NoteProperty，直接丟給 `ConvertTo-Json` 會把整個 provider 物件圖序�
 | `-Merge <路徑>` | 彙整模式。給資料夾或多個 `.node.json` |
 | `-Anonymize` / `-Json` / `-OutDir` | 與診斷工具相同 |
 
+匿名化後的 `.node.json` 會把主機名稱雜湊，適合回傳支援人員，但不能用來產生真正的
+machine list。要產生串機設定，請使用只留在客戶端、不外傳的原始 `.node.json`。
+
 ### 「串機」其實是兩件事，門檻差很多
 
 客戶說要串機時，先問清楚是哪一種——很多人是照第二種的教學在設定第一種：
@@ -376,7 +380,7 @@ NoteProperty，直接丟給 `ConvertTo-Json` 會把整個 provider 物件圖序�
 | 軟體 | AEDT 版本、安裝路徑（環境變數／登錄檔／檔案系統三條線索交叉比對） |
 | temp | `default.cfg` 的 `tempdirectory`，是否為本機磁碟、是否存在、剩餘空間 |
 | RSM | 服務是否存在與執行、TCP 32958 是否真的在聽 |
-| MPI | Intel MPI `hydra_service`、Microsoft MPI、IBM Platform MPI；版本是否各機一致 |
+| MPI | Intel MPI `hydra_service`、Microsoft MPI、IBM Platform MPI；版本是否各機一致。一般多工作站以 Intel MPI 為主 |
 | 網路 | 有效網卡數、虛擬／VPN 介面、網段、主機名稱能否解析回自己 |
 | 防火牆 | 各設定檔開關、有沒有放行 32958 或 AEDT 的輸入規則 |
 | 連通性 | 對每個 `-Peers` 測名稱解析與 TCP 32958 |
@@ -398,10 +402,10 @@ HPC Pack 額外開放的核心是 `2 × 4ⁿ`。**手上 pack 不多時，攤到
 
 ### 這支工具做不到的事
 
-- **不能一鍵串好。** 首次佈署要在每台以管理員身分執行，而且 `mpiexec -register`
-  本來就要人輸入密碼。真正能一鍵的是佈署完成之後的日常連線。
-- **不查 MPI 帳密有沒有註冊過。** 憑證在使用者層級，工具不去讀也不應該讀，
-  只會請人自己跑 `mpiexec -validate`。
+- **不能在未確認的情況下一鍵改完 AEDT。** GUI 可完成檢查、彙整、建立機器清單與批次命令，並引導套用與驗證；首次佈署仍要在每台確認 RSM、MPI、防火牆與 AEDT Analysis Configuration。「套用完整修復」會自行要求系統管理員權限，GUI 本身請用實際執行 AEDT 的帳號開啟。
+  AEDT 2026 R1 內附的 Intel MPI 已確認支援 `mpiexec -register/-validate`；GUI 會偵測實際執行檔，帳密只在本機安全提示視窗輸入，不會寫入命令列、報告或檔案。
+- **Microsoft MPI 不是一般工作站的備援方案。** AEDT 2026 R1 的多主機 Microsoft MPI
+  只支援 Windows HPC Job；兩台一般 Windows 工作站預設使用 Intel MPI。
 - **不判斷串機划不划算。** 串機能不能贏過單機取決於網路頻寬與模型型態，
   DDM 在千兆網路上常常比單機還慢。
 
@@ -417,7 +421,7 @@ HPC Pack 額外開放的核心是 `2 × 4ⁿ`。**手上 pack 不多時，攤到
 
 | 檔案 | 內容 |
 | --- | --- |
-| `machines.txt` | `-MachineList file=` 用的機器清單，一行一台 |
+| `machines.txt` | `-MachineList file=` 用的機器清單，一行一台並包含 task、核心與 RAM 百分比 |
 | `verify-batchoptions.cmd` | **第一次使用前必跑**，對照該版本實際支援的選項 |
 | `run-batch.cmd` | 批次分散求解命令，**預設是註解掉的** |
 | `待辦清單.txt` | 還缺什麼、被排除的機器與原因 |
@@ -439,13 +443,16 @@ HPC Pack 額外開放的核心是 `2 × 4ⁿ`。**手上 pack 不多時，攤到
 .\tests\Run-AllTests.ps1
 ```
 
-67 項，涵蓋彙整模式的每一條跨機比對規則、純計算函式，以及產生器的輸出安全性
+涵蓋彙整模式的跨機比對規則、純計算函式、匿名化，以及產生器的輸出安全性
 （`.cmd` 全 ASCII、百分號跳脫、求解命令確實是註解狀態）。
 這些都不碰真實機器、不需要 Ansys、不需要 Windows——刻意設計成這樣才能每次提交都跑。
 
 **沒有被測到的**：`Check-AnsysLicense.ps1` 全部，以及 `Test-AedtCluster.ps1`
 的節點收集模式。這些只能在真的 Windows 工作站上驗——
 逐項步驟見 **[串機工具-現場驗證清單](docs/串機工具-現場驗證清單.md)**，帶去現場照著打勾。
+
+出發前的兩台電腦測試與客戶端精簡流程見
+**[客戶端操作與驗證](docs/客戶端操作與驗證.md)**。
 
 ---
 

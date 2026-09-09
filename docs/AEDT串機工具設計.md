@@ -56,18 +56,20 @@
 8. 防火牆放行：
    - **TCP 32958** — `AnsoftRSMService`（可在 Remote Analysis Options 改，預設就是它）
    - MPI 自己用的埠
-   初次測試時建議先整個關掉，確認能通再逐條收緊。
+   正式設定保持防火牆啟用，並加入所需程式、服務與連接埠例外。暫時停用只可用於
+   特定 RSM 連線錯誤的隔離測試，確認後立即恢復。
 
 ### MPI
 
 9. 選定 MPI 廠商並在**每台**裝好：
-   - **Intel MPI**（近版預設）：Windows 上需要 `hydra_service.exe` 安裝且執行中，
-     且 hydra_service 的版本要與要用的 Intel MPI 版本相符。
-   - **Microsoft MPI**：AEDT 未指定廠商時的預設值。在
-     `HPC and Analysis Options > Options` 設 `MPI Vendor = Microsoft`。
+   - **Intel MPI**：AEDT 2026 R1 在 Windows 的預設 MPI Vendor，通常使用 Intel MPI 2021。
+     Windows 上需要 `hydra_service.exe` 安裝且執行中，版本須與所選 Intel MPI 相符。
+   - **Microsoft MPI**：多台 Windows 主機只支援以 Windows HPC Job 執行，不能因為使用
+     VPN 就把一般工作站改成 Microsoft MPI。
    - 舊版流程用的是 **IBM Platform MPI**。
-   - **走 VPN 時 Intel MPI 容易失敗**，這種環境改用 MS-MPI 較穩。
-10. Intel MPI 要註冊帳密：`mpiexec -register`，再用 `mpiexec -validate` 確認。
+10. MPI 的遠端啟動與使用者驗證方式依實際 MPI 版本而定。先用
+    `Get-Command mpiexec.exe -All` 確認來源，再依該版本說明與小模型實測；
+    不把舊版 `mpiexec -register/-validate` 當成通用指令。
 
 ### 授權
 
@@ -170,7 +172,8 @@
 
 吃節點報告，產生：
 
-- `machines.txt` — `-MachineList file=` 用的機器清單，一行一台
+- `machines.txt` — `-MachineList file=` 用的機器清單，一行一台，格式為
+  `MachineName:Tasks:Cores:RAM%`
 - `verify-batchoptions.cmd` — 第一次使用前的選項驗證步驟
 - `run-batch.cmd` — 批次分散求解命令
 - `待辦清單.txt` — 還缺什麼、哪幾台被排除與原因
@@ -195,12 +198,13 @@
 要以管理員身分在**每一台**跑。做的事：
 
 - 註冊 RSM
-- 安裝 / 啟動 `hydra_service`，或安裝 MS-MPI
+- 一般多工作站安裝／啟動 Intel MPI `hydra_service`；只有 Windows HPC Job 才考慮 MS-MPI
 - 寫入 `default.cfg` 的 `tempdirectory`
 - 加防火牆規則（32958 + MPI）
 
 每個動作**必須先備份、可回復**，比照 `docs/修復動作與復原.md` 的規格。
-這支不可能無人值守：帳密註冊（`mpiexec -register`）本來就要人輸入。
+這支不可能無人值守：若所選 MPI 版本需要使用者驗證，必須由實際執行者依該版本流程輸入，
+工具不得讀取或保存帳號密碼。
 
 ---
 

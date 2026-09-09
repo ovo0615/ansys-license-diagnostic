@@ -143,10 +143,12 @@ $ACTION_CATALOG = [ordered]@{
     'set-temp-directory'       = @{ Tier = 1; Label = '設定 default.cfg 的 tempdirectory' }
     'set-mpi-vendor'           = @{ Tier = 1; Label = '指定 MPI 廠商' }
     'install-hydra-service'    = @{ Tier = 2; Label = '安裝 Intel MPI hydra_service' }
+    'install-intel-mpi'        = @{ Tier = 2; Label = '安裝 AEDT 支援的 Intel MPI' }
     'install-msmpi'            = @{ Tier = 2; Label = '安裝 Microsoft MPI' }
     'register-mpi-credential'  = @{ Tier = 2; Label = '註冊 MPI 帳號密碼（需人工輸入）' }
     'add-cluster-firewall'     = @{ Tier = 2; Label = '新增串機所需的防火牆例外' }
     'align-aedt-version'       = @{ Tier = 3; Label = '統一各機器的 AEDT 版本或安裝路徑' }
+    'align-os-version'         = @{ Tier = 3; Label = '統一各機器的 Windows 版本或更新層級' }
     'align-user-account'       = @{ Tier = 3; Label = '統一各機器的使用者帳號密碼' }
     'fix-network-topology'     = @{ Tier = 3; Label = '調整網路架構（多網卡／跨網段／VPN）' }
 }
@@ -193,15 +195,30 @@ function Add-Row {
 # ============================================================================
 #  去識別化
 # ============================================================================
+$script:AnonymizationKey = $null
+$script:SensitiveHosts = @($Peers | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                              ForEach-Object { [string]$_ } | Sort-Object -Unique)
+$script:SensitiveUsers = @()
+$script:SensitiveDomains = @()
+
 function Protect-Value {
     param([string] $Value, [string] $Prefix = 'X')
     if (-not $Anonymize)                      { return $Value }
     if ([string]::IsNullOrWhiteSpace($Value)) { return $Value }
-    $md5   = [System.Security.Cryptography.MD5]::Create()
-    $bytes = $md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value.ToLower()))
-    $hex   = ''
-    foreach ($b in $bytes[0..3]) { $hex += $b.ToString('x2') }
-    $md5.Dispose()
+    if ($null -eq $script:AnonymizationKey) {
+        $script:AnonymizationKey = New-Object byte[] 32
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($script:AnonymizationKey) } finally { $rng.Dispose() }
+    }
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    try {
+        $hmac.Key = $script:AnonymizationKey
+        $bytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value.ToLowerInvariant()))
+    } finally {
+        $hmac.Dispose()
+    }
+    $hex = ''
+    foreach ($b in $bytes[0..7]) { $hex += $b.ToString('x2') }
     return ($Prefix + '-' + $hex)
 }
 
@@ -217,6 +234,21 @@ function Protect-Text {
     }
     if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
         $t = $t -replace [regex]::Escape($env:COMPUTERNAME), (Protect-Value -Value $env:COMPUTERNAME -Prefix 'pc')
+    }
+    foreach ($hostName in @($script:SensitiveHosts | Where-Object { $_ } |
+                              Sort-Object { ([string]$_).Length } -Descending |
+                              Select-Object -Unique)) {
+        $t = $t -replace [regex]::Escape([string]$hostName),
+                         (Protect-Value -Value ([string]$hostName) -Prefix 'host')
+    }
+    foreach ($userName in @($script:SensitiveUsers | Where-Object { $_ } | Select-Object -Unique)) {
+        $t = $t -replace [regex]::Escape([string]$userName),
+                         (Protect-Value -Value ([string]$userName) -Prefix 'user')
+    }
+    foreach ($domainName in @($script:SensitiveDomains | Where-Object { $_ } | Select-Object -Unique)) {
+        if ([string]$domainName -eq 'WORKGROUP') { continue }
+        $t = $t -replace [regex]::Escape([string]$domainName),
+                         (Protect-Value -Value ([string]$domainName) -Prefix 'domain')
     }
     return $t
 }
@@ -364,7 +396,8 @@ function Get-AedtInstalls {
 
     foreach ($pat in @('C:\Program Files\AnsysEM\*\Win64',
                        'C:\Program Files\AnsysEM\*\*\Win64',
-                       'C:\Program Files\ANSYS Inc\*\Win64')) {
+                       'C:\Program Files\ANSYS Inc\*\Win64',
+                       'C:\Program Files\ANSYS Inc\*\AnsysEM')) {
         foreach ($d in (Get-Item -Path $pat -ErrorAction SilentlyContinue)) {
             _addInstall -Root $d.FullName -Source 'filesystem'
         }
@@ -740,6 +773,21 @@ function Invoke-MergeMode {
 
     if ($nodes.Count -eq 0) { return 2 }
 
+    # 匿名彙整報告時也要遮掉節點檔內出現的所有本機與對端名稱。
+    $nodeHosts = @($nodes | ForEach-Object {
+        [string]$_.node.computerName
+        [string]$_.node.userName
+        [string]$_.node.domain
+        @($_.node.peerProbes) | ForEach-Object { [string]$_.target }
+    } | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_) -and [string]$_ -ne 'WORKGROUP'
+    })
+    $script:SensitiveHosts = @($script:SensitiveHosts + $nodeHosts | Sort-Object -Unique)
+    $script:SensitiveUsers = @($nodes | ForEach-Object { [string]$_.node.userName } |
+                                Where-Object { $_ } | Sort-Object -Unique)
+    $script:SensitiveDomains = @($nodes | ForEach-Object { [string]$_.node.domain } |
+                                  Where-Object { $_ } | Sort-Object -Unique)
+
     # 案件編號一致性。不一致代表混到別case的資料，比對出來的差異全都不可信。
     $cases = @($nodes | ForEach-Object { $_.caseId } | Select-Object -Unique)
     $case  = @($cases)[0]
@@ -808,6 +856,70 @@ function Invoke-MergeMode {
             Add-Finding -Level 'OK' -Title ('每台都有的版本：' + ((@($common)) -join '、')) `
                 -Detail '串機請指定其中一個版本。'
             $script:Facts['共通版本'] = ((@($common)) -join '、')
+        }
+
+        # 1b. 作業系統產品不同是明確不相容；相同產品但更新層級不同先列為疑點。
+        #     新版節點分開保存 Caption／Version／Build，舊版仍可從 os 欄位盡量解析。
+        Write-Step '比對作業系統版本'
+        $osRecords = @()
+        $osUnknown = @()
+        foreach ($n in $nodes) {
+            $caption = [string]$n.node.osCaption
+            $version = [string]$n.node.osVersion
+            $build = [string]$n.node.osBuildNumber
+            $legacy = [string]$n.node.os
+            if ([string]::IsNullOrWhiteSpace($caption)) { $caption = $legacy }
+            if ([string]::IsNullOrWhiteSpace($version) -and
+                $caption -match '^(.*?)\s*\((\d+(?:\.\d+)+)\)\s*$') {
+                $caption = $Matches[1].Trim()
+                $version = $Matches[2]
+            }
+            if ([string]::IsNullOrWhiteSpace($caption)) {
+                $osUnknown += $n.node.computerName
+                continue
+            }
+            $osRecords += [pscustomobject]@{
+                Computer = [string]$n.node.computerName
+                Caption = $caption.Trim()
+                CaptionKey = $caption.Trim().ToLowerInvariant()
+                Version = $version.Trim()
+                Build = $build.Trim()
+            }
+        }
+        $captionGroups = @($osRecords | Group-Object CaptionKey)
+        if ($captionGroups.Count -gt 1) {
+            $detail = ''
+            foreach ($r in $osRecords) {
+                $suffix = if ($r.Version) { ' (' + $r.Version + ')' } else { '' }
+                $detail += '  ' + $r.Caption + $suffix + '  <- ' + $r.Computer + [Environment]::NewLine
+            }
+            Add-Finding -Level 'CONFIRMED' -Title '作業系統版本各機不同' `
+                -Detail ($detail + '參與串機的機器應使用相同 Windows 產品版本。') `
+                -Fix '請 IT 把要參與串機的機器統一到相同 Windows 產品版本。' `
+                -FixAction 'align-os-version' -FixOn 'all'
+        } elseif ($captionGroups.Count -eq 1) {
+            $versions = @($osRecords | ForEach-Object { $_.Version } |
+                          Where-Object { $_ } | Select-Object -Unique)
+            $builds = @($osRecords | ForEach-Object { $_.Build } |
+                        Where-Object { $_ } | Select-Object -Unique)
+            if ($versions.Count -gt 1 -or $builds.Count -gt 1) {
+                $detail = ''
+                foreach ($r in $osRecords) {
+                    $detail += '  ' + $r.Caption + '，Version ' + $(if ($r.Version) { $r.Version } else { '未知' }) +
+                               '，Build ' + $(if ($r.Build) { $r.Build } else { '未知' }) +
+                               '  <- ' + $r.Computer + [Environment]::NewLine
+                }
+                Add-Finding -Level 'SUSPECT' -Title 'Windows 更新層級各機不同' `
+                    -Detail ($detail + '不先判定為故障；正式求解前請確認 Windows Update 與修補層級。') `
+                    -Fix '請 IT 確認各機器的 Windows 更新與修補層級是否需要統一。' `
+                    -FixAction 'align-os-version' -FixOn 'all'
+            } else {
+                Add-Finding -Level 'OK' -Title ('作業系統版本一致：' + $osRecords[0].Caption)
+            }
+        }
+        if ($osUnknown.Count -gt 0) {
+            Add-Finding -Level 'MANUAL' -Title '有機器讀不到作業系統版本' `
+                -Detail ('請人工確認：' + ($osUnknown -join '、'))
         }
 
         # 2. 安裝路徑是否一致
@@ -948,8 +1060,9 @@ function Invoke-MergeMode {
         }
         Add-Finding -Level 'CONFIRMED' -Title '沒有任何一種 MPI 是每台都有的' `
             -Detail ($detail + '走 MPI 的串機要求每台裝同一種、同一版。') `
-            -Fix '選定一種（VPN 環境建議 Microsoft MPI）在每台裝好。' `
-            -FixAction 'install-msmpi' -FixOn 'all'
+            -Fix ('一般 Windows 多工作站請在每台安裝 AEDT 支援的相同 Intel MPI；' +
+                  'Microsoft MPI 的多主機模式只支援 Windows HPC Job。') `
+            -FixAction 'install-intel-mpi' -FixOn 'all'
     } elseif ($commonVendors.Count -gt 0) {
         Add-Finding -Level 'OK' -Title ('每台都有的 MPI：' + ($commonVendors -join '、'))
         # hydra_service 的版本要與 Intel MPI 版本相符
@@ -970,7 +1083,8 @@ function Invoke-MergeMode {
                 }
                 Add-Finding -Level 'SUSPECT' -Title 'Intel MPI 的 hydra_service 版本各機不同' `
                     -Detail ($detail + 'hydra_service 的版本必須與要使用的 Intel MPI 版本相符。') `
-                    -Fix '統一各機的 Intel MPI 版本，或改用 Microsoft MPI。' `
+                    -Fix ('統一各機的 Intel MPI 版本。只有 Windows HPC Job 的多主機模式' +
+                          '才可改用 Microsoft MPI。') `
                     -FixAction 'install-hydra-service' -FixOn 'all'
             }
             $noHydraRun = @($nodes | Where-Object {
@@ -999,7 +1113,10 @@ function Invoke-MergeMode {
     }
     if ($users.Keys.Count -gt 1) {
         $detail = ''
-        foreach ($k in $users.Keys) { $detail += '  ' + $k + '  <- ' + (($users[$k]) -join '、') + [Environment]::NewLine }
+        foreach ($k in $users.Keys) {
+            $displayUser = Protect-Value -Value ([string]$k) -Prefix 'user'
+            $detail += '  ' + $displayUser + '  <- ' + (($users[$k]) -join '、') + [Environment]::NewLine
+        }
         Add-Finding -Level 'SUSPECT' -Title '收集時的使用者帳號各機不同' `
             -Detail ($detail + [Environment]::NewLine +
                      '串機要求每台有同一組帳號與密碼。這裡看到的是「跑本工具的人」，' +
@@ -1008,7 +1125,8 @@ function Invoke-MergeMode {
             -Fix '確認實際要跑模擬的帳號在每台都存在且密碼相同（或使用網域帳號）。' `
             -FixAction 'align-user-account' -FixOn 'all'
     } elseif ($users.Keys.Count -eq 1) {
-        Add-Finding -Level 'INFO' -Title ('收集時的帳號各機一致：' + (@($users.Keys)[0])) `
+        $displayUser = Protect-Value -Value ([string](@($users.Keys)[0])) -Prefix 'user'
+        Add-Finding -Level 'INFO' -Title ('收集時的帳號各機一致：' + $displayUser) `
             -Detail '密碼是否相同無法由本工具驗證。'
     }
 
@@ -1060,8 +1178,9 @@ function Invoke-MergeMode {
     if ($withVirtual.Count -gt 0) {
         Add-Finding -Level 'INFO' -Title '有機器存在虛擬或 VPN 介面' `
             -Detail (('  ' + ($withVirtual -join ([Environment]::NewLine + '  '))) + [Environment]::NewLine +
-                     '虛擬介面本身通常無害，但串不起來時它是第一嫌疑。' + [Environment]::NewLine +
-                     '判定靠名稱樣式比對，可能有漏。走 VPN 時 Intel MPI 容易失敗，這種環境建議改用 Microsoft MPI。')
+                     '虛擬介面本身通常無害，但要確認主機名稱解析到預期介面。' + [Environment]::NewLine +
+                     '判定靠名稱樣式比對，可能有漏。不要因為使用 VPN 就改用 Microsoft MPI；' +
+                     'Microsoft MPI 多主機只支援 Windows HPC Job。')
     }
 
     # 8. 連通性矩陣
@@ -1102,7 +1221,8 @@ function Invoke-MergeMode {
     if ($fwOff.Count -gt 0) {
         Add-Finding -Level 'INFO' -Title '有機器的防火牆設定檔是關閉的' `
             -Detail ('  ' + ((@($fwOff | ForEach-Object { $_.node.computerName })) -join '、') + [Environment]::NewLine +
-                     '串機初次測試時關防火牆是官方建議的做法，但驗證通過後應該逐條開回來。')
+                     '正式設定應啟用防火牆，並放行 AEDT、RSM、Intel Hydra 與 MPI 通訊埠。' +
+                     '官方只在特定 RSM 連線錯誤的故障排除流程中，把暫時停用防火牆列為隔離測試。')
     }
 
     # 10. HPC Pack 試算
@@ -1219,6 +1339,7 @@ $os = $null
 try { $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop } catch { }
 $cs = $null
 try { $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop } catch { }
+if ($cs -and $cs.Domain) { $script:SensitiveDomains = @([string]$cs.Domain) }
 
 $logicalCores = 0
 $physCores    = 0
@@ -1330,7 +1451,7 @@ if ($installs.Count -eq 0) {
             fileVersion = $i.FileVersion
             sources     = $i.Sources
             cfgFound    = $t.CfgFound
-            tempDir     = $t.TempDir
+            tempDir     = Protect-Text $t.TempDir
             tempKind    = $(if ($loc) { $loc.Kind } else { $null })
             tempExists  = $(if ($loc) { $loc.Exists } else { $null })
             tempFreeGB  = $(if ($loc) { $loc.FreeGB } else { $null })
@@ -1513,11 +1634,12 @@ if ($mpiDetected.Count -eq 0) {
         $detail += [Environment]::NewLine + '本次指定 -Mode DSO，所以不列為問題。'
     }
     Add-Finding -Level $lvl -Title '沒有偵測到可用的 MPI 服務' -Detail $detail `
-        -Fix ('選定一種 MPI 在每台裝好並註冊帳密：' + [Environment]::NewLine +
-              '  Intel MPI：hydra_service -install / -start，再 mpiexec -register、mpiexec -validate' + [Environment]::NewLine +
-              '  Microsoft MPI：安裝後在 HPC and Analysis Options > Options 設 MPI Vendor = Microsoft' + [Environment]::NewLine +
-              '  走 VPN 的環境建議直接用 Microsoft MPI，Intel MPI 在 VPN 下容易失敗。') `
-        -FixAction 'install-msmpi'
+        -Fix ('一般 Windows 多工作站請安裝 AEDT 支援的 Intel MPI，並確認 hydra_service 執行中。' +
+              [Environment]::NewLine +
+              '在 HPC and Analysis Options > Options 設 MPI Vendor = Intel、MPI Version = Default 或實際安裝版。' +
+              [Environment]::NewLine +
+              'Microsoft MPI 多主機只支援 Windows HPC Job，不是一般工作站或 VPN 的替代方案。') `
+        -FixAction 'install-intel-mpi'
     Write-Step '未偵測到 MPI 服務'
 } else {
     $vendors = @($mpiDetected | ForEach-Object { $_.vendor } | Select-Object -Unique)
@@ -1541,13 +1663,15 @@ if ($mpiDetected.Count -eq 0) {
     }
 }
 
-# MPI 帳密註冊本工具查不到——這件事只能請人自己驗
-Add-Finding -Level 'MANUAL' -Title 'MPI 帳號密碼是否註冊過，本工具無法確認' `
-    -Detail ('Intel MPI 的憑證存在使用者層級，本工具不去讀也不應該讀。' + [Environment]::NewLine +
-             '這是串機失敗時很常見的原因，但只能由使用者自己驗。') `
-    -Fix ('在每台以實際跑模擬的帳號執行：' + [Environment]::NewLine +
-          '  mpiexec -validate' + [Environment]::NewLine +
-          '回應不是 SUCCESS 時，執行 mpiexec -register 重新註冊。') `
+# MPI 的驗證方式會隨 AEDT 綁定的 Intel MPI 版本而變，不能把舊版命令當成通則。
+Add-Finding -Level 'MANUAL' -Title 'MPI 遠端啟動與使用者驗證需要實際測試' `
+    -Detail ('本工具不讀取或保存任何帳號密碼。AEDT 2026 R1 Help 沒有把 ' +
+             'mpiexec -register／-validate 列為 Intel MPI 2021 的通用步驟。') `
+    -Fix ('在每台以實際執行 AEDT 的帳號確認 mpiexec 來源與版本，再依該版本說明設定驗證：' +
+          [Environment]::NewLine +
+          '  Get-Command mpiexec.exe -All' + [Environment]::NewLine +
+          '  mpiexec.exe -help' + [Environment]::NewLine +
+          '最後以小模型的單機雙程序與雙機求解證明遠端程序能啟動。') `
     -FixAction 'register-mpi-credential'
 
 # ---------------------------------------------------------------------------
@@ -1592,8 +1716,8 @@ if ($virtual.Count -gt 0) {
     Add-Finding -Level 'INFO' -Title ('本機有 ' + $virtual.Count + ' 個虛擬或 VPN 介面') `
         -Detail (('  ' + ((@($virtual | ForEach-Object { $_.Alias + ' ' + $_.IPv4 })) -join
                   ([Environment]::NewLine + '  '))) + [Environment]::NewLine +
-                 '判定是靠名稱樣式比對，可能有漏。走 VPN 時 Intel MPI 容易失敗，' +
-                 '這種環境建議改用 Microsoft MPI。')
+                 '判定是靠名稱樣式比對，可能有漏。請確認主機名稱解析到預期介面。' +
+                 '不要因為使用 VPN 就改用 Microsoft MPI；Microsoft MPI 多主機只支援 Windows HPC Job。')
 }
 
 # 主機名稱能不能解析回自己
@@ -1626,7 +1750,8 @@ if ($fwProfiles.Count -gt 0) {
     foreach ($p in $fwProfiles) { Add-Row $sec ($p.name + ' : ' + $(if ($p.enabled) { '啟用' } else { '關閉' })) }
     if ($anyOff) {
         Add-Finding -Level 'INFO' -Title '有防火牆設定檔是關閉的' `
-            -Detail '串機初次測試時關防火牆是官方建議的做法，但驗證通過後應該逐條開回來。'
+            -Detail ('正式設定應啟用防火牆並加入 AEDT、RSM、Intel Hydra 與 MPI 通訊例外。' +
+                     '暫時停用防火牆只適合在特定連線錯誤下隔離原因，不是標準前置步驟。')
     }
 } else {
     Add-Finding -Level 'MANUAL' -Title '讀不到防火牆設定' `
@@ -1789,6 +1914,9 @@ $nodeBlock = [ordered]@{
     userName     = (Protect-Text $env:USERNAME)
     domain       = $(if ($cs) { Protect-Text ([string]$cs.Domain) } else { '' })
     os           = $(if ($os) { [string]$os.Caption } else { '' })
+    osCaption    = $(if ($os) { [string]$os.Caption } else { '' })
+    osVersion    = $(if ($os) { [string]$os.Version } else { '' })
+    osBuildNumber= $(if ($os) { [string]$os.BuildNumber } else { '' })
     isAdmin      = $isAdmin
     mode         = $Mode
     physicalCores= $physCores
@@ -1811,7 +1939,8 @@ $nodeBlock = [ordered]@{
 $nodePath = Join-Path $OutDir ($baseName + '.node.json')
 $payload  = Get-FindingsPayload -Case $CaseId -Extra @{ node = [pscustomobject]$nodeBlock }
 try {
-    $payload | ConvertTo-Json -Depth 10 | Out-File -FilePath $nodePath -Encoding utf8 -Force
+    $jsonText = $payload | ConvertTo-Json -Depth 10
+    (Protect-Text $jsonText) | Out-File -FilePath $nodePath -Encoding utf8 -Force
 } catch {
     Write-Host ('  節點 JSON 輸出失敗：' + $_.Exception.Message) -ForegroundColor Red
     $nodePath = $null
@@ -1822,8 +1951,8 @@ if ($Json -and $nodePath) {
     # -Json 要的是不含 node 區塊的精簡版，給解決包產生器吃
     $jsonPath = Join-Path $OutDir ($baseName + '.findings.json')
     try {
-        (Get-FindingsPayload -Case $CaseId) | ConvertTo-Json -Depth 8 |
-            Out-File -FilePath $jsonPath -Encoding utf8 -Force
+        $jsonText = (Get-FindingsPayload -Case $CaseId) | ConvertTo-Json -Depth 8
+        (Protect-Text $jsonText) | Out-File -FilePath $jsonPath -Encoding utf8 -Force
     } catch { $jsonPath = $null }
 }
 

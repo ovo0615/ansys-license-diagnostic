@@ -54,3 +54,11 @@ feature_map.json
 
 # 診斷輸出的機器可讀結果，含客戶識別資訊
 *.findings.json
+
+# 本機交付封裝與驗證暫存；正式版本由 Git commit 保存
+AEDT_Multi_PC_Toolkit*.zip
+_package_*/
+_qa_*/
+batch.log
+repair_backup/
+repair_reports/

@@ -72,15 +72,18 @@ function Assert-Finding {
         [string] $TitleLike,
         [string] $Level,
         [string] $DetailLike,
+        [string] $FixAction,
         [switch] $Absent
     )
     $hits = @($Findings | Where-Object {
         $_.title -like ('*' + $TitleLike + '*') -and (-not $Level -or $_.level -eq $Level) -and
-        (-not $DetailLike -or ([string]$_.detail) -like ('*' + $DetailLike + '*'))
+        (-not $DetailLike -or ([string]$_.detail) -like ('*' + $DetailLike + '*')) -and
+        (-not $FixAction -or ([string]$_.fixAction) -eq $FixAction)
     })
     $want  = if ($Absent) { '不該出現' } else { '應出現' }
     $what  = if ($TitleLike) { '「' + $TitleLike + '」' } else { '任何 ' + $Level + ' 結論' }
     if ($DetailLike) { $what += '（說明含「' + $DetailLike + '」）' }
+    if ($FixAction) { $what += '（修復動作為「' + $FixAction + '」）' }
     $ok    = if ($Absent) { $hits.Count -eq 0 } else { $hits.Count -gt 0 }
     if ($ok) {
         $script:Pass++
@@ -303,15 +306,37 @@ Assert-Finding -Case '案例13' -Findings $f -TitleLike '沒有任何連通性�
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '案例 14：temp 路徑差異來自 8.3 短檔名時要提醒，其他情況要閉嘴' -ForegroundColor White
-# 開發機上實際遇到的：同一台的 v251 寫 C:/Users/JEFF~1.HON/...、v241 寫
-# C:/Users/jeff.hong/...，指的是同一個目錄。判定仍是【確定】（AEDT 比的是
+# 開發機上實際遇到的：同一台的 v251 寫 C:/Profiles/EXAMPL~1.USR/...、v241 寫
+# C:/Profiles/example.user/...，指的是同一個目錄。判定仍是【確定】（AEDT 比的是
 # 路徑字串），但要讓看報告的人知道有這個可能，不然他會去找一個不存在的差異。
 $f = Invoke-Merge @(
-    (New-Node -Name 'WS01' -TempDir 'C:\Users\JEFF~1.HON\AppData\Local\Temp')
-    (New-Node -Name 'WS02' -TempDir 'C:\Users\jeff.hong\AppData\Local\Temp')
+    (New-Node -Name 'WS01' -TempDir 'C:\Profiles\EXAMPL~1.USR\AppData\Local\Temp')
+    (New-Node -Name 'WS02' -TempDir 'C:\Profiles\example.user\AppData\Local\Temp')
 )
 Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -Level 'CONFIRMED'
 Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -DetailLike '長短檔名'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '案例 15：作業系統版本不一致要攔截' -ForegroundColor White
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -Os 'Microsoft Windows 11 Pro' -OsVersion '10.0.26100' -OsBuild '26100')
+    (New-Node -Name 'WS02' -Os 'Microsoft Windows 10 Pro' -OsVersion '10.0.19045' -OsBuild '19045')
+)
+Assert-Finding -Case '案例15' -Findings $f -TitleLike '作業系統版本各機不同' `
+    -Level 'CONFIRMED' -FixAction 'align-os-version'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '案例 16：Windows 產品相同但更新層級不同，只列疑點' -ForegroundColor White
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -Os 'Microsoft Windows 11 Pro' -OsVersion '10.0.26100' -OsBuild '26100')
+    (New-Node -Name 'WS02' -Os 'Microsoft Windows 11 Pro' -OsVersion '10.0.26200' -OsBuild '26200')
+)
+Assert-Finding -Case '案例16' -Findings $f -TitleLike 'Windows 更新層級各機不同' `
+    -Level 'SUSPECT' -FixAction 'align-os-version'
+Assert-Finding -Case '案例16' -Findings $f -TitleLike '作業系統版本各機不同' `
+    -Level 'CONFIRMED' -Absent
 
 # 沒有短檔名時不可以講這一句——不該講的要閉嘴，否則提醒就變成雜訊。
 $f = Invoke-Merge @(

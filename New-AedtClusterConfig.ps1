@@ -61,8 +61,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]] $From,
     [string]   $Project,
+    [ValidateRange(1, 2147483647)]
     [int]      $TasksPerNode = 1,
+    [ValidateRange(0, 2147483647)]
     [int]      $CoresPerNode = 0,
+    [ValidateRange(1, 99)]
     [int]      $Ratio = 90,
     [switch]   $IncludeUnready,
     [string]   $OutDir
@@ -167,6 +170,9 @@ foreach ($n in $nodes) {
         $blocked += '讀不到核心數，無法決定要配幾核'
         $cores = 0
     }
+    if ($cores -gt 0 -and $TasksPerNode -ge $cores) {
+        $blocked += ('TasksPerNode 必須小於 CoresPerNode（目前 ' + $TasksPerNode + '／' + $cores + '）')
+    }
 
     $entries += [pscustomobject]@{
         Name    = $name
@@ -206,12 +212,14 @@ $projectArg = if ([string]::IsNullOrWhiteSpace($Project)) { '<專案檔路徑.ae
 # ---------------------------------------------------------------------------
 #  machines.txt
 #
-#  檔案格式在官方文件裡是明確的：一行一台機器名稱或位址。
-#  這是本工具唯一有把握的輸出格式，所以 run-batch 預設用 file= 而不是 list=。
+#  官方格式是一行一台，並可附加 tasks、cores 與 RAM 百分比。
+#  把資源寫進檔案，避免執行時落回該使用者上次的 AEDT 設定。
 # ---------------------------------------------------------------------------
 $machinesPath = Join-Path $OutDir 'machines.txt'
 $ml = New-Object System.Text.StringBuilder
-foreach ($e in $use) { $null = $ml.AppendLine($e.Name) }
+foreach ($e in $use) {
+    $null = $ml.AppendLine($e.Name + ':' + $e.Tasks + ':' + $e.Cores + ':' + $Ratio + '%')
+}
 $ml.ToString() | Out-File -FilePath $machinesPath -Encoding ascii -Force
 
 # ---------------------------------------------------------------------------
@@ -227,7 +235,7 @@ foreach ($n in $nodes) {
     }
     if ($aedtRoot) { break }
 }
-if (-not $aedtRoot) { $aedtRoot = 'C:\Program Files\AnsysEM\v242\Win64' }
+if (-not $aedtRoot) { $aedtRoot = '<AEDT_INSTALL_DIR>' }
 
 $verifyPath = Join-Path $OutDir 'verify-batchoptions.cmd'
 $vb = New-Object System.Text.StringBuilder
@@ -243,7 +251,7 @@ $null = $vb.AppendLine('REM  from public documentation and is NOT verified again
 $null = $vb.AppendLine('REM  Run this first, compare the listed options with run-batch.cmd, then')
 $null = $vb.AppendLine('REM  uncomment the command in run-batch.cmd.')
 $null = $vb.AppendLine('REM')
-$null = $vb.AppendLine('REM  Note: -Batchoptions opens a GUI dialog. Read it, do not expect stdout.')
+$null = $vb.AppendLine('REM  Note: -Help and -Batchoptionhelp open GUI windows; do not expect stdout.')
 $null = $vb.AppendLine('REM ==========================================================================')
 $null = $vb.AppendLine('')
 $null = $vb.AppendLine('set "AEDT=' + $aedtRoot + '\ansysedt.exe"')
@@ -255,12 +263,16 @@ $null = $vb.AppendLine('    pause')
 $null = $vb.AppendLine('    exit /b 1')
 $null = $vb.AppendLine(')')
 $null = $vb.AppendLine('')
-$null = $vb.AppendLine('echo Opening the AEDT batch option list...')
+$null = $vb.AppendLine('echo Opening the AEDT command-line and batch-option help windows...')
 $null = $vb.AppendLine('echo Check that these options exist and are spelled the same way:')
-$null = $vb.AppendLine('echo     -BatchSolve   -Distributed   -MachineList   -ng   -Auto')
+$null = $vb.AppendLine('echo     -BatchSolve   -Distributed   -MachineList   -ng')
 $null = $vb.AppendLine('echo And check the accepted -MachineList forms: list= / file= / num=')
 $null = $vb.AppendLine('echo.')
-$null = $vb.AppendLine('"%AEDT%" -Batchoptions')
+$null = $vb.AppendLine('"%AEDT%" -Help')
+$null = $vb.AppendLine('echo.')
+$null = $vb.AppendLine('echo Close the command-line help window, then press any key to continue.')
+$null = $vb.AppendLine('pause ^>nul')
+$null = $vb.AppendLine('"%AEDT%" -Batchoptionhelp')
 $null = $vb.AppendLine('')
 $null = $vb.AppendLine('pause')
 $vb.ToString() | Out-File -FilePath $verifyPath -Encoding ascii -Force

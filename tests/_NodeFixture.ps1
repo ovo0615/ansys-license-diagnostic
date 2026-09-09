@@ -22,6 +22,9 @@ function New-Node {
         [string] $User     = 'ansys',
         [string] $Ip       = '192.168.10.10',
         [string] $Network  = '192.168.10.0/24',
+        [string] $Os       = 'Microsoft Windows 11 Pro',
+        [string] $OsVersion= '10.0.26100',
+        [string] $OsBuild  = '26100',
         [int]    $RealNics = 1,
         [int]    $VirtualNics = 0,
         [object[]] $Peers  = @(),
@@ -78,7 +81,8 @@ function New-Node {
         notAutomatable = @()
         node = [pscustomobject]@{
             computerName = $Name; userName = $User; domain = 'WORKGROUP'
-            os = 'Windows 11'; isAdmin = $true; mode = 'DDM'
+            os = $Os; osCaption = $Os; osVersion = $OsVersion; osBuildNumber = $OsBuild
+            isAdmin = $true; mode = 'DDM'
             physicalCores = 16; logicalCores = 32; memoryGB = 128
             collectedAt = '2026-09-07T10:00:00+08:00'
             aedt = $aedt

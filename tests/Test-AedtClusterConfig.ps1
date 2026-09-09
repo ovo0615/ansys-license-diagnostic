@@ -106,8 +106,13 @@ $r = Invoke-Generator @(
 Assert-True '離開代碼為 0' ($r.ExitCode -eq 0) ('實際 ' + $r.ExitCode)
 Assert-True 'machines.txt 含兩台' (($r.Machines -match 'WS01') -and ($r.Machines -match 'WS02'))
 Assert-True 'machines.txt 一行一台' (@($r.Machines -split "`r?`n" | Where-Object { $_ }).Count -eq 2)
+Assert-True 'machines.txt 寫入 task、核心與 RAM 百分比' ($r.Machines -match 'WS01:1:16:90%')
 Assert-True '有產生 run-batch.cmd' ($null -ne $r.RunBatch)
 Assert-True '有產生 verify-batchoptions.cmd' ($null -ne $r.Verify)
+Assert-True '驗證工具使用 -Batchoptionhelp' ($r.Verify -match '-Batchoptionhelp')
+Assert-True '兩個 Help 視窗之間會提示關閉並暫停' `
+    ($r.Verify -match '(?s)-Help.*Close the command-line help window.*pause \^>nul.*-Batchoptionhelp')
+Assert-True '驗證工具不會誤用單獨的 -Batchoptions' ($r.Verify -notmatch '(?im)^"%AEDT%" -Batchoptions\s*$')
 Assert-True '有產生待辦清單' ($null -ne $r.Todo)
 
 # 這是整支工具最重要的一條：選項拼法沒在實機驗證過，命令就不能是可執行狀態。
@@ -131,6 +136,13 @@ $listValue = ''
 if ($listLine -match 'list="([^"]*)"') { $listValue = $Matches[1] }
 Assert-True 'list= 的值裡沒有落單的百分號' `
     (($listValue.Length -gt 0) -and ($listValue -notmatch '(?<!%)%(?!%)')) ('實際：' + $listValue)
+Remove-Item -LiteralPath $r.Dir -Recurse -Force -ErrorAction SilentlyContinue
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '案例 9：task 數不得大於或等於核心數' -ForegroundColor White
+$r = Invoke-Generator @( (New-Node -Name 'WS01') ) -ExtraArgs @{ CoresPerNode = 4; TasksPerNode = 4 }
+Assert-True '不合法資源配置不產生設定' ($r.ExitCode -ne 0 -and $null -eq $r.Machines)
 Remove-Item -LiteralPath $r.Dir -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------------------
