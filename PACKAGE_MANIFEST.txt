@@ -14,7 +14,7 @@ AEDT Multi-PC Toolkit 2026 R1 - GUI NOEXE
 - 固定 AnsoftCOM TCP 55000-55499 與 Intel MPI TCP 55500-55999。
 - 自動偵測 Intel Hydra 服務埠，建立工具專用的網域／私人防火牆允許規則。
 - 所有防火牆規則只允許 LocalSubnet，不會關閉 Windows 防火牆。
-- GUI 加入 Intel MPI 帳密註冊與對端驗證；密碼不放入命令列或報告。
+- GUI 加入 Intel MPI 原生帳密註冊與對端驗證；工具不接收密碼，也不把密碼放入命令列或報告。
 - GUI 內容會隨視窗大小延展；縮小時提供分頁捲軸。
 
 檔案：

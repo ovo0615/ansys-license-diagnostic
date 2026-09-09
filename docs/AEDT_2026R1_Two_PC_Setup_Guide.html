@@ -184,7 +184,8 @@
         <li>Windows UAC 出現時按「是」。不需要輸入任何指令。</li>
         <li>看到「完整修復完成」後，在另一台重複相同步驟。</li>
         <li>按「註冊 MPI 帳密並驗證」。</li>
-        <li>Windows 帳密視窗使用預設帳號，輸入目前登入 Windows 的密碼。網域帳號格式為 <code>Domain\user</code>；不同網域且兩台已建立相同本機帳密時可用 <code>.\User</code>。</li>
+        <li>依提示開啟 Intel MPI 帳密視窗。看到 <code>account</code> 的預設帳號時直接按 Enter，再輸入目前 Windows 密碼兩次。輸入密碼時畫面不會顯示字元。</li>
+        <li>網域帳號格式為 <code>Domain\user</code>；不同網域且兩台已建立相同本機帳密時可用 <code>.\User</code>。</li>
         <li>看到「Intel MPI 帳密註冊完成，對端驗證成功」。兩台都各執行一次。</li>
         <li>儲存工作，兩台都重新啟動 Windows，讓 TEMP、RSM 與 MPI 設定完整生效。</li>
         <li>兩台回到「① 節點檢查」重新執行；再彙整一次，確認 TEMP 路徑相同。</li>
@@ -197,7 +198,7 @@
         <tr><td>Intel Hydra</td><td>依本機服務自動偵測，通常為 <code>8680</code></td><td>網域／私人網路的本機子網路</td></tr>
       </tbody></table>
       <div class="note">備份放在工具內的 <code>repair_backup</code>；結果放在 <code>repair_reports</code>。修復只新增／更新工具專用的允許規則，不會關閉 Windows 防火牆，也不會更改 hosts。</div>
-      <div class="warn"><strong>密碼安全：</strong>GUI 使用 Windows 的密碼遮罩視窗，密碼只透過標準輸入交給 Intel MPI，完成後立即清除；不放進命令列，不寫入報告或檔案。</div>
+      <div class="warn"><strong>密碼安全：</strong>密碼由 Intel MPI 自己的互動視窗直接讀取；工具不會接收密碼，也不會把密碼放進命令列、報告或檔案。</div>
     </section>
 
     <section id="trouble">

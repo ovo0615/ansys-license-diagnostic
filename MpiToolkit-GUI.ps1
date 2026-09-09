@@ -291,7 +291,7 @@ function Start-MpiCredentialRegistration {
     try {
         Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $arguments `
             -WindowStyle Hidden | Out-Null
-        $statusLabel.Text = '請在 Windows 帳密視窗輸入目前登入帳號與密碼；工具不會保存密碼。'
+        $statusLabel.Text = '請依 Intel MPI 帳密視窗輸入目前帳號與密碼；工具不會接收或保存密碼。'
     } catch {
         Show-InputError ('無法啟動 MPI 帳密註冊：' + $_.Exception.Message)
     }
@@ -498,7 +498,7 @@ $repairTab.Controls.Add($repairHint)
 $repairTempBox = Add-Field $repairTab '共同暫存路徑' 72 'C:\AnsysWork\AedtTemp' -BrowseFolder
 $repairPeerBox = Add-Field $repairTab '對端電腦名稱' 120 ''
 $repairInfo = New-Object Windows.Forms.Label
-$repairInfo.Text = "依序執行：① 完整修復 TEMP／連接埠／防火牆。② 註冊目前 Windows 帳密並驗證對端。`r`n密碼只送入 Intel MPI，不會寫入命令列、工具報告或檔案；不會改 hosts。"
+$repairInfo.Text = "依序執行：① 完整修復 TEMP／連接埠／防火牆。② 在 Intel MPI 視窗註冊帳密並驗證對端。`r`n密碼由 Intel MPI 直接讀取，工具不會接收、保存或寫入檔案；不會改 hosts。"
 $repairInfo.Location = New-Object Drawing.Point(24,168); $repairInfo.Size = New-Object Drawing.Size(840,58); $repairInfo.ForeColor = [Drawing.Color]::FromArgb(45,52,60)
 $repairInfo.Anchor = 'Top, Left, Right'
 $repairTab.Controls.Add($repairInfo)

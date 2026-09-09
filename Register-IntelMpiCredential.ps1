@@ -39,7 +39,6 @@ function Invoke-IntelMpiProcess {
     param(
         [string] $FilePath,
         [string] $Arguments,
-        [string[]] $InputLines = @(),
         [int] $TimeoutSeconds = 30
     )
     $info = New-Object Diagnostics.ProcessStartInfo
@@ -49,15 +48,10 @@ function Invoke-IntelMpiProcess {
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
-    $info.RedirectStandardInput = $true
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $info
     try {
         if (-not $process.Start()) { throw '無法啟動 Intel MPI。' }
-        foreach ($inputLine in $InputLines) {
-            $process.StandardInput.WriteLine($inputLine)
-        }
-        $process.StandardInput.Close()
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
@@ -69,6 +63,44 @@ function Invoke-IntelMpiProcess {
             StdOut = $stdoutTask.Result
             StdErr = $stderrTask.Result
         }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Start-IntelMpiCredentialPrompt {
+    param([string] $FilePath)
+
+    Add-Type -AssemblyName System.Windows.Forms
+    $instructions = @"
+即將開啟 Intel MPI 帳密視窗：
+
+1．account 顯示目前帳號時，直接按 Enter。
+2．輸入目前 Windows 密碼，再按 Enter。
+3．再次輸入相同密碼確認，再按 Enter。
+
+輸入密碼時畫面不會顯示任何字元，這是正常的。
+"@
+    [Windows.Forms.MessageBox]::Show(
+        $instructions,
+        'Intel MPI 帳密註冊',
+        [Windows.Forms.MessageBoxButtons]::OK,
+        [Windows.Forms.MessageBoxIcon]::Information
+    ) | Out-Null
+
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $env:ComSpec
+    $info.Arguments = '/d /c ""' + $FilePath + '" -register"'
+    $info.WorkingDirectory = Split-Path -Parent $FilePath
+    $info.UseShellExecute = $true
+    $info.CreateNoWindow = $false
+    $info.WindowStyle = 'Normal'
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $info
+    try {
+        if (-not $process.Start()) { throw '無法開啟 Intel MPI 帳密視窗。' }
+        $process.WaitForExit()
+        return $process.ExitCode
     } finally {
         $process.Dispose()
     }
@@ -95,28 +127,9 @@ if ($DiscoverOnly) {
 $Peer = $Peer.Trim()
 if ($Peer -notmatch '^[A-Za-z0-9.-]+$') { throw '請輸入對端電腦名稱。' }
 
-$defaultUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$credential = Get-Credential -UserName $defaultUser `
-    -Message '請輸入目前 Windows 帳號與密碼。帳密只交給 Intel MPI，不會寫入工具報告。'
-if (-not $credential) { throw '已取消 MPI 帳密註冊。' }
-
-$bstr = [IntPtr]::Zero
-$plainPassword = $null
-try {
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($credential.Password)
-    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    $registerArgs = '-register -username ' + (Quote-ProcessArgument $credential.UserName)
-    $registered = Invoke-IntelMpiProcess -FilePath $mpiExe -Arguments $registerArgs `
-        -InputLines @($plainPassword, $plainPassword)
-    if ($registered.ExitCode -ne 0) {
-        throw ('Intel MPI 帳密註冊失敗，離開代碼：' + $registered.ExitCode)
-    }
-} finally {
-    $plainPassword = $null
-    if ($bstr -ne [IntPtr]::Zero) {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    }
-    $credential = $null
+$registerExitCode = Start-IntelMpiCredentialPrompt -FilePath $mpiExe
+if ($registerExitCode -ne 0) {
+    throw ('Intel MPI 帳密註冊未完成，離開代碼：' + $registerExitCode)
 }
 
 $validateArgs = '-validate -host ' + (Quote-ProcessArgument $Peer)
