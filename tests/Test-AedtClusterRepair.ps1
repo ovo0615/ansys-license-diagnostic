@@ -87,6 +87,7 @@ try {
     Assert-True '網路修復規劃模式不變更系統且成功' ($exitNetwork -eq 0 -and $network.networkPlanOnly -eq $true)
     Assert-True 'AnsoftCOM 連接埠範圍固定' ($network.networkSettings.ANSYSEM_LISTEN_PORT_RANGE.target -eq '55000:55499')
     Assert-True 'Intel MPI 連接埠範圍固定' ($network.networkSettings.I_MPI_PORT_RANGE.target -eq '55500:55999')
+    Assert-True 'RSM MPI 執行目錄指向 AEDT 安裝目錄' ($network.networkSettings.ANSYS_EM_EXEC_DIR.target -eq $aedtRoot)
     Assert-True '包含 RSM、Hydra、AnsoftCOM 與 MPI 防火牆規則' (@($network.firewallRules).Count -eq 4)
     Assert-True '防火牆規則只允許網域／私人設定檔與本機子網路' (
         @($network.firewallRules | Where-Object { $_.Profiles -ne 'Domain,Private' -or $_.RemoteAddress -ne 'LocalSubnet' }).Count -eq 0)

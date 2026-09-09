@@ -192,6 +192,7 @@ if (-not $SkipServiceChanges) {
 
 $hydraPort = Get-HydraServicePort
 $networkTargets = [ordered]@{
+    ANSYS_EM_EXEC_DIR = $AedtRoot
     ANSYSEM_LISTEN_PORT_RANGE = '55000:55499'
     I_MPI_PORT_RANGE = '55500:55999'
     I_MPI_HYDRA_SERVICE_PORT = [string]$hydraPort
@@ -282,6 +283,7 @@ if ($ShowResult) {
     [Windows.Forms.MessageBox]::Show(
         $message + [Environment]::NewLine + [Environment]::NewLine +
         'TEMP：' + $TempDirectory + [Environment]::NewLine +
+        'RSM MPI 目錄：' + $AedtRoot + [Environment]::NewLine +
         'RSM 32958：' + $(if ($result.localRsmPort32958) { '正常' } else { '失敗' }) + [Environment]::NewLine +
         $(if ($result.restartRequired) { '下一步：兩台電腦都要重新啟動 Windows。' + [Environment]::NewLine } else { '' }) +
         '備份：' + $backupCfg,

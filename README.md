@@ -402,8 +402,8 @@ HPC Pack 額外開放的核心是 `2 × 4ⁿ`。**手上 pack 不多時，攤到
 
 ### 這支工具做不到的事
 
-- **不能在未確認的情況下一鍵改完 AEDT。** GUI 可完成檢查、彙整、建立機器清單與批次命令，並引導套用與驗證；首次佈署仍要在每台確認 RSM、MPI、防火牆與 AEDT Analysis Configuration。「套用完整修復」會自行要求系統管理員權限，GUI 本身請用實際執行 AEDT 的帳號開啟。
-  AEDT 2026 R1 內附的 Intel MPI 已確認支援 `mpiexec -register/-validate`；GUI 會偵測實際執行檔，帳密只在本機安全提示視窗輸入，不會寫入命令列、報告或檔案。
+- **不能在未確認的情況下一鍵改完 AEDT。** GUI 可完成檢查、彙整、建立機器清單與批次命令，並引導套用與驗證；首次佈署仍要在每台確認 RSM、MPI、防火牆與 AEDT Analysis Configuration。「① 完整修復（管理員）」會設定 RSM MPI 所需的 `ANSYS_EM_EXEC_DIR` 並自行要求系統管理員權限；GUI 本身請用實際執行 AEDT 的帳號開啟。
+  AEDT 2026 R1 內附的 Intel MPI 已確認支援 `mpiexec -register/-validate`；GUI 會偵測實際執行檔，帳密只在 Intel MPI 視窗輸入，不會寫入命令列、報告或檔案。「③ 雙機快速測試」會再驗證 RSM、Hydra、兩節點 hostname 與既有 Ansys 程序。
 - **Microsoft MPI 不是一般工作站的備援方案。** AEDT 2026 R1 的多主機 Microsoft MPI
   只支援 Windows HPC Job；兩台一般 Windows 工作站預設使用 Intel MPI。
 - **不判斷串機划不划算。** 串機能不能贏過單機取決於網路頻寬與模型型態，

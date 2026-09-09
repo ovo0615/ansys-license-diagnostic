@@ -109,6 +109,7 @@ RULES = [
 ]
 
 ALLOWED_COMPANIES = {'虎門科技股份有限公司'}
+ALLOWED_HOST_LIKE_LABELS = {'multi-pc'}
 
 TEXT_EXT = {'.md', '.txt', '.json', '.html', '.ps1', '.bat', '.py', '.yml',
             '.yaml', '.ini', '.xml', '.csv'}
@@ -143,6 +144,8 @@ def check_sensitive(files):
                     if name == 'Email 位址' and v.lower() in ALLOWED_EMAILS:
                         continue
                     if name == '公司名稱' and v in ALLOWED_COMPANIES:
+                        continue
+                    if name == '具名主機' and v.lower() in ALLOWED_HOST_LIKE_LABELS:
                         continue
                     fail('%s:%d  %s -> %s' % (f, i, name, v), line.strip()[:100])
                     hit = True

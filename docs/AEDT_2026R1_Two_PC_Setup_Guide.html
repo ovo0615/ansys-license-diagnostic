@@ -52,7 +52,7 @@
     <p>適用：兩台 Windows 工作站，未使用 Windows HPC Scheduler</p>
     <div class="route">正確路線：Electromagnetics RSM ＋ Intel MPI ＋ AEDT Machine List</div>
   </div></header>
-  <nav><div class="inner"><a href="#before">準備</a><a href="#s1">1．確認</a><a href="#s2">2．RSM</a><a href="#s3">GUI ①</a><a href="#s4">GUI ②</a><a href="#s5">GUI ③</a><a href="#s6">GUI ④</a><a href="#repair">GUI ⑤ 修復</a><a href="#s7">求解</a><a href="#trouble">故障</a><a href="#checklist">驗收</a></div></nav>
+  <nav><div class="inner"><a href="#before">準備</a><a href="#s1">1．確認</a><a href="#s2">2．RSM</a><a href="#repair">GUI ⑤ 修復</a><a href="#s3">GUI ①</a><a href="#s4">GUI ②</a><a href="#s5">GUI ③</a><a href="#s6">GUI ④</a><a href="#s7">求解</a><a href="#trouble">故障</a><a href="#checklist">驗收</a></div></nav>
   <main>
     <section id="before">
       <h2>開始前只要準備這些</h2>
@@ -61,8 +61,9 @@
         <tr><td>AEDT</td><td>兩台安裝 AEDT 2026 R1，而且安裝路徑相同。</td></tr>
         <tr><td>RSM</td><td>安裝 Electromagnetics RSM。它不是 Ansys Remote Solve Manager。</td></tr>
         <tr><td>MPI</td><td>使用 AEDT 支援的相同 Intel MPI。一般兩台工作站不要選 Microsoft MPI。</td></tr>
-        <tr><td>權限</td><td>使用實際執行 AEDT 的帳號開啟 GUI；只有按「套用完整修復」時會跳出系統管理員權限確認。</td></tr>
+        <tr><td>權限</td><td>使用實際執行 AEDT 的帳號開啟 GUI；只有按「① 完整修復（管理員）」時會跳出系統管理員權限確認。</td></tr>
         <tr><td>測試模型</td><td>使用幾分鐘內能完成的小模型複本。</td></tr>
+        <tr><td>求解前清場</td><td>先關閉兩台所有 AEDT／HFSS 求解器；快速測試通過後，只在主控電腦開啟 AEDT。</td></tr>
         <tr><td>額外套件</td><td>不用安裝任何額外套件，也不用輸入命令。</td></tr>
       </tbody></table>
       <div class="danger"><strong>不要做：</strong>不要關閉防毒、不要永久關閉防火牆、不要修改 <code>LocalAccountTokenFilterPolicy</code>、不要使用 <code>taskkill</code>。</div>
@@ -86,6 +87,34 @@
       <ol><li>兩台都從 Windows「開始」搜尋並執行 <strong>Register with RSM</strong>。</li><li>看到註冊完成後按「確定」。</li><li>回到已開啟的 GUI。RSM 服務與 TCP 32958 會在節點檢查時自動確認。</li></ol>
       <div class="ok"><strong>通過：</strong>GUI 報告顯示 RSM 正在執行，而且 TCP 32958 正常。</div>
       <div class="warn">若公司改過 RSM Port，AEDT Remote Analysis 與兩台 RSM 必須使用同一個值。</div>
+    </section>
+
+    <section id="repair">
+      <h2>GUI ⑤：明早先做完整修復與雙機快速測試</h2>
+      <p><strong>兩台都做一次。全程只按 GUI 按鈕，不必開命令視窗。</strong></p>
+      <ol>
+        <li>關閉兩台所有 AEDT／HFSS 求解器，再開啟 GUI 的「⑤ 連線修復」。</li>
+        <li>「共同暫存路徑」保持 <code>C:\AnsysWork\AedtTemp</code>。兩台必須完全相同，但各自建立在本機磁碟。</li>
+        <li>「對端電腦名稱」填另一台電腦名稱。</li>
+        <li>按「① 完整修復（管理員）」。</li>
+        <li>Windows UAC 出現時按「是」。不需要輸入任何指令。</li>
+        <li>兩台都看到「完整修復完成」後，重新啟動兩台 Windows，讓 RSM 的 MPI 環境生效。</li>
+        <li>重新開機後先不要開 AEDT。回到 GUI ⑤，按「② 註冊 MPI 帳密並驗證」。</li>
+        <li>看到 <code>account</code> 的預設帳號時直接按 Enter，輸入已確認可登入對端的密碼兩次。輸入時不會顯示字元。</li>
+        <li>網域帳號格式為 <code>Domain\user</code>；若公司測試環境使用兩台相同的本機帳號，帳號與密碼兩邊都必須相同。</li>
+        <li>兩台各完成一次後，按「③ 雙機快速測試」。這個按鈕不會再次詢問密碼。</li>
+        <li>確認畫面同時顯示 MPI 帳密、RSM 32958、Intel Hydra、兩節點 hostname 全部通過，而且沒有既有 AEDT／求解器警告。</li>
+        <li>回到「① 節點檢查」重新執行，再彙整一次。</li>
+      </ol>
+      <div class="ok"><strong>修復內容：</strong>備份 <code>default.cfg</code>、建立可寫的本機 TEMP、統一 <code>tempdirectory</code>、把 <code>ANSYS_EM_EXEC_DIR</code> 指到 AEDT 安裝目錄、啟動 RSM／Intel Hydra，並固定下列連接埠。</div>
+      <table><thead><tr><th>用途</th><th>TCP 連接埠</th><th>允許範圍</th></tr></thead><tbody>
+        <tr><td>RSM</td><td><code>32958</code></td><td>網域／私人網路的本機子網路</td></tr>
+        <tr><td>AnsoftCOM</td><td><code>55000–55499</code></td><td>網域／私人網路的本機子網路</td></tr>
+        <tr><td>Intel MPI</td><td><code>55500–55999</code></td><td>網域／私人網路的本機子網路</td></tr>
+        <tr><td>Intel Hydra</td><td>依本機服務自動偵測，通常為 <code>8680</code></td><td>網域／私人網路的本機子網路</td></tr>
+      </tbody></table>
+      <div class="note">備份放在工具內的 <code>repair_backup</code>；結果放在 <code>repair_reports</code>。修復只新增／更新工具專用的允許規則，不會關閉 Windows 防火牆，也不會更改 hosts。</div>
+      <div class="warn"><strong>密碼安全：</strong>密碼由 Intel MPI 自己的互動視窗直接讀取；工具不會接收密碼，也不會把密碼放進命令列、報告或檔案。</div>
     </section>
 
     <section id="s3">
@@ -151,7 +180,10 @@
       <ol>
         <li>切到 GUI 的「④ 套用與驗證」。</li>
         <li>按「驗證命令選項」，等待兩個 AEDT Help 視窗依序開啟；看完第一個並關閉後，才會出現第二個。</li>
+        <li>確認另一台電腦沒有開啟 AEDT／HFSS 求解器。</li>
         <li>按「開啟 AEDT 小模型」。</li>
+        <li>在 AEDT 選擇 <strong>Tools ＞ Options ＞ General Options ＞ Remote Analysis</strong>。</li>
+        <li>確認 <code>Ansoft Service Port = 32958</code>，而且 <strong>Disable access by remote machines 不要勾選</strong>，再按 OK。</li>
         <li>在 AEDT 選擇 <strong>Tools ＞ Options ＞ HPC and Analysis Options</strong>。</li>
         <li>Options 頁設定 <code>MPI Vendor = Intel</code>。</li>
         <li><code>MPI Version</code> 選 <code>Default</code>，或兩台共同安裝的版本。</li>
@@ -168,37 +200,9 @@
       <h3>7.1　先跑單機雙程序</h3>
       <ol><li>只選 WS01，但配置兩個 process／task。</li><li>開始求解並確認完成。</li></ol>
       <h3>7.2　再跑 WS01＋WS02</h3>
-      <ol><li>切換成含兩台的 Analysis Configuration。</li><li>使用與明天相同的求解類型。明天跑 DDM，今天就必須測 DDM。</li><li>開始求解。</li><li>在兩台工作管理員確認都有 solver process，CPU 或記憶體有活動。</li><li>查看 Messages、Solution Profile 或 batch log，確認兩台節點與實際 distribution type。</li><li>確認求解完成，並與單機主要結果比較。</li></ol>
+      <ol><li>只在主控電腦開啟 AEDT；另一台只保留 RSM 與 Intel Hydra 服務。</li><li>切換成含兩台的 Analysis Configuration。</li><li>使用與明天相同的求解類型。明天跑 DDM，今天就必須測 DDM。</li><li>開始求解。</li><li>在兩台工作管理員確認都有 solver process，CPU 或記憶體有活動。</li><li>查看 Messages、Solution Profile 或 batch log，確認兩台節點與實際 distribution type。</li><li>確認求解完成，並與單機主要結果比較。</li></ol>
       <div class="ok"><strong>真正通過：</strong>兩台都有求解程序＋記錄顯示兩台節點＋求解完成＋主要結果合理一致。</div>
       <div class="note">雙機比單機慢不一定是錯誤。小模型及 DDM 容易被網路延遲抵銷。</div>
-    </section>
-
-    <section id="repair">
-      <h2>GUI ⑤：TEMP 不一致或求解卡住時修復</h2>
-      <p><strong>只有節點／彙整報告顯示 TEMP 不一致，或求解卡在 Determining memory availability 時才執行。</strong></p>
-      <ol>
-        <li>兩台都開啟 GUI，切到「⑤ 連線修復」。</li>
-        <li>「共同暫存路徑」保持 <code>C:\AnsysWork\AedtTemp</code>。兩台必須完全相同，但各自建立在本機磁碟。</li>
-        <li>「對端電腦名稱」填另一台電腦名稱。</li>
-        <li>按「套用完整修復（管理員）」。</li>
-        <li>Windows UAC 出現時按「是」。不需要輸入任何指令。</li>
-        <li>看到「完整修復完成」後，在另一台重複相同步驟。</li>
-        <li>按「註冊 MPI 帳密並驗證」。</li>
-        <li>依提示開啟 Intel MPI 帳密視窗。看到 <code>account</code> 的預設帳號時直接按 Enter，再輸入目前 Windows 密碼兩次。輸入密碼時畫面不會顯示字元。</li>
-        <li>網域帳號格式為 <code>Domain\user</code>；不同網域且兩台已建立相同本機帳密時可用 <code>.\User</code>。</li>
-        <li>看到「Intel MPI 帳密註冊完成，對端驗證成功」。兩台都各執行一次。</li>
-        <li>儲存工作，兩台都重新啟動 Windows，讓 TEMP、RSM 與 MPI 設定完整生效。</li>
-        <li>兩台回到「① 節點檢查」重新執行；再彙整一次，確認 TEMP 路徑相同。</li>
-      </ol>
-      <div class="ok"><strong>修復內容：</strong>備份 <code>default.cfg</code>、建立可寫的本機 TEMP、統一 <code>tempdirectory</code>、啟動 RSM／Intel Hydra，並固定下列連接埠。</div>
-      <table><thead><tr><th>用途</th><th>TCP 連接埠</th><th>允許範圍</th></tr></thead><tbody>
-        <tr><td>RSM</td><td><code>32958</code></td><td>網域／私人網路的本機子網路</td></tr>
-        <tr><td>AnsoftCOM</td><td><code>55000–55499</code></td><td>網域／私人網路的本機子網路</td></tr>
-        <tr><td>Intel MPI</td><td><code>55500–55999</code></td><td>網域／私人網路的本機子網路</td></tr>
-        <tr><td>Intel Hydra</td><td>依本機服務自動偵測，通常為 <code>8680</code></td><td>網域／私人網路的本機子網路</td></tr>
-      </tbody></table>
-      <div class="note">備份放在工具內的 <code>repair_backup</code>；結果放在 <code>repair_reports</code>。修復只新增／更新工具專用的允許規則，不會關閉 Windows 防火牆，也不會更改 hosts。</div>
-      <div class="warn"><strong>密碼安全：</strong>密碼由 Intel MPI 自己的互動視窗直接讀取；工具不會接收密碼，也不會把密碼放進命令列、報告或檔案。</div>
     </section>
 
     <section id="trouble">
@@ -209,7 +213,7 @@
         <tr><td>只有 WS01 在算</td><td>Configuration 是否含 WS02、setup 是否允許該 distribution type、模型是否太小。</td></tr>
         <tr><td>DSO 成功但 DDM 失敗</td><td>DSO variations 可能沒用 MPI。檢查 Intel MPI、Hydra、MPI Port 與安裝路徑。</td></tr>
         <tr><td>MPI 啟動失敗</td><td>Intel MPI 版本是否相同、AEDT 是否選 Intel，並於 GUI「⑤」重新執行「註冊 MPI 帳密並驗證」。</td></tr>
-        <tr><td>卡在 Determining memory availability</td><td>先用 Cancel Analysis；再於兩台執行 GUI「⑤」的完整修復與 MPI 帳密驗證，完成後重新啟動兩台 Windows。</td></tr>
+        <tr><td>卡在 Determining memory availability</td><td>先用 Cancel Analysis；確認遠端沒有另一套 AEDT／求解器，再檢查兩台 <code>ANSYS_EM_EXEC_DIR</code>、MPI 快速測試與安裝路徑。</td></tr>
         <tr><td>停在 ABORTING</td><td>等待乾淨取消。不要用 <code>taskkill</code>；確認遠端 HFSS／HPC 授權已歸還後再重試。</td></tr>
         <tr><td>其他求解卡住</td><td>查看 Messages、Profile 與 log。使用 Cancel Analysis，不要用 <code>taskkill</code>。</td></tr>
       </tbody></table>
@@ -222,6 +226,8 @@
       <div class="check"><input type="checkbox"><span>兩台 RSM 都是 Running，並完成 Register with RSM。</span></div>
       <div class="check"><input type="checkbox"><span>兩台互測 TCP 32958 成功。</span></div>
       <div class="check"><input type="checkbox"><span>兩台都完成「註冊 MPI 帳密並驗證」，而且對端驗證成功。</span></div>
+      <div class="check"><input type="checkbox"><span>GUI「③ 雙機快速測試」顯示 MPI、RSM、Hydra 與兩節點 hostname 全部通過。</span></div>
+      <div class="check"><input type="checkbox"><span>正式求解前兩台沒有其他 AEDT／求解器；之後只在主控電腦開啟 AEDT。</span></div>
       <div class="check"><input type="checkbox"><span>兩台 <code>tempdirectory</code> 都是 <code>C:\AnsysWork\AedtTemp</code>，而且各自可寫入。</span></div>
       <div class="check"><input type="checkbox"><span>彙整沒有【確定】錯誤。</span></div>
       <div class="check"><input type="checkbox"><span>AEDT Test Machines 兩台通過。</span></div>

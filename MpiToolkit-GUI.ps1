@@ -124,7 +124,7 @@ function Add-Field {
 
 function Set-RunningState {
     param([bool] $Running, [string] $Message)
-    foreach ($button in @($runNodeButton, $runMergeButton, $runConfigButton, $demoButton, $verifyButton, $openProjectButton, $copyMachineButton, $mpiCredentialButton)) {
+    foreach ($button in @($runNodeButton, $runMergeButton, $runConfigButton, $demoButton, $verifyButton, $openProjectButton, $copyMachineButton, $mpiCredentialButton, $mpiVerifyButton)) {
         $button.Enabled = -not $Running
     }
     $progressBar.Visible = $Running
@@ -295,6 +295,16 @@ function Start-MpiCredentialRegistration {
     } catch {
         Show-InputError ('無法啟動 MPI 帳密註冊：' + $_.Exception.Message)
     }
+}
+
+function Start-MpiVerification {
+    $peerName = $repairPeerBox.Text.Trim()
+    if ($peerName -notmatch '^[A-Za-z0-9.-]+$') {
+        Show-InputError '請先輸入對端電腦名稱。'
+        return
+    }
+    $arguments = @('-Peer', (Quote-Argument $peerName), '-VerifyOnly')
+    Start-ToolProcess 'Register-IntelMpiCredential.ps1' $arguments $script:ToolRoot '雙機快速測試'
 }
 
 $form = New-Object Windows.Forms.Form
@@ -498,23 +508,29 @@ $repairTab.Controls.Add($repairHint)
 $repairTempBox = Add-Field $repairTab '共同暫存路徑' 72 'C:\AnsysWork\AedtTemp' -BrowseFolder
 $repairPeerBox = Add-Field $repairTab '對端電腦名稱' 120 ''
 $repairInfo = New-Object Windows.Forms.Label
-$repairInfo.Text = "依序執行：① 完整修復 TEMP／連接埠／防火牆。② 在 Intel MPI 視窗註冊帳密並驗證對端。`r`n密碼由 Intel MPI 直接讀取，工具不會接收、保存或寫入檔案；不會改 hosts。"
+$repairInfo.Text = "依序執行：① 完整修復後重新啟動。② 註冊 Intel MPI 帳密。③ 關閉兩台 AEDT 後做雙機快速測試。`r`n密碼由 Intel MPI 直接讀取，工具不會接收、保存或寫入檔案；不會改 hosts。"
 $repairInfo.Location = New-Object Drawing.Point(24,168); $repairInfo.Size = New-Object Drawing.Size(840,58); $repairInfo.ForeColor = [Drawing.Color]::FromArgb(45,52,60)
 $repairInfo.Anchor = 'Top, Left, Right'
 $repairTab.Controls.Add($repairInfo)
 $repairButton = New-Object Windows.Forms.Button
-$repairButton.Text='套用完整修復（管理員）'; $repairButton.Location=New-Object Drawing.Point(520,246); $repairButton.Size=New-Object Drawing.Size(315,50)
-$repairButton.Anchor = 'Top, Right'
+$repairButton.Text='① 完整修復（管理員）'; $repairButton.Location=New-Object Drawing.Point(24,246); $repairButton.Size=New-Object Drawing.Size(255,50)
+$repairButton.Anchor = 'Top, Left'
 $repairButton.BackColor=[Drawing.Color]::FromArgb(190,82,44); $repairButton.ForeColor=[Drawing.Color]::White; $repairButton.FlatStyle='Flat'
 $repairButton.Add_Click({ Start-ElevatedRepair })
 $repairTab.Controls.Add($repairButton)
 $mpiCredentialButton = New-Object Windows.Forms.Button
-$mpiCredentialButton.Text='註冊 MPI 帳密並驗證'; $mpiCredentialButton.Location=New-Object Drawing.Point(24,246); $mpiCredentialButton.Size=New-Object Drawing.Size(315,50)
+$mpiCredentialButton.Text='② 註冊 MPI 帳密並驗證'; $mpiCredentialButton.Location=New-Object Drawing.Point(306,246); $mpiCredentialButton.Size=New-Object Drawing.Size(255,50)
 $mpiCredentialButton.BackColor=[Drawing.Color]::FromArgb(0,103,184); $mpiCredentialButton.ForeColor=[Drawing.Color]::White; $mpiCredentialButton.FlatStyle='Flat'
 $mpiCredentialButton.Add_Click({ Start-MpiCredentialRegistration })
 $repairTab.Controls.Add($mpiCredentialButton)
+$mpiVerifyButton = New-Object Windows.Forms.Button
+$mpiVerifyButton.Text='③ 雙機快速測試'; $mpiVerifyButton.Location=New-Object Drawing.Point(588,246); $mpiVerifyButton.Size=New-Object Drawing.Size(247,50)
+$mpiVerifyButton.Anchor = 'Top, Right'
+$mpiVerifyButton.BackColor=[Drawing.Color]::FromArgb(21,124,83); $mpiVerifyButton.ForeColor=[Drawing.Color]::White; $mpiVerifyButton.FlatStyle='Flat'
+$mpiVerifyButton.Add_Click({ Start-MpiVerification })
+$repairTab.Controls.Add($mpiVerifyButton)
 $repairGuide = New-Object Windows.Forms.Label
-$repairGuide.Text = '兩台都完成完整修復與 MPI 驗證後，重新啟動 Windows，再回到「① 節點檢查」。'
+$repairGuide.Text = '快速測試全部通過後，只在主控電腦開啟 AEDT；另一台保持沒有 AEDT／求解器程序。'
 $repairGuide.Location = New-Object Drawing.Point(24,315); $repairGuide.Size = New-Object Drawing.Size(840,30); $repairGuide.ForeColor = [Drawing.Color]::FromArgb(174,91,0)
 $repairGuide.Anchor = 'Top, Left, Right'
 $repairTab.Controls.Add($repairGuide)
