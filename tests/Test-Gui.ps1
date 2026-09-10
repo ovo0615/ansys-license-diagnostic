@@ -11,6 +11,7 @@ $guiSourcePath = Join-Path $rootDir 'MpiToolkit-GUI.ps1'
 $launcherPath = Join-Path $rootDir 'Run-MpiToolkit-GUI.bat'
 $guidePath = Join-Path $rootDir 'docs\AEDT_2026R1_Two_PC_Setup_Guide.html'
 $mpiCredentialPath = Join-Path $rootDir 'Register-IntelMpiCredential.ps1'
+$openSshSetupPath = Join-Path $rootDir 'Setup-NODEB-OpenSSH.cmd'
 
 function Assert-True {
     param([string] $Name, [bool] $Condition)
@@ -30,6 +31,7 @@ $source = Get-Content -LiteralPath $guiSourcePath -Raw -Encoding UTF8
 $launcher = Get-Content -LiteralPath $launcherPath -Raw
 $guide = Get-Content -LiteralPath $guidePath -Raw -Encoding UTF8
 $mpiCredential = Get-Content -LiteralPath $mpiCredentialPath -Raw -Encoding UTF8
+$openSshSetup = Get-Content -LiteralPath $openSshSetupPath -Raw
 $guiBytes = [IO.File]::ReadAllBytes($guiSourcePath)
 $tokens = $null
 $parseErrors = $null
@@ -88,6 +90,14 @@ Assert-True '啟動器改用無 EXE GUI' ($launcher -match 'MpiToolkit-GUI\.ps1'
 Assert-True '啟動器不要求使用者輸入命令' ($launcher -match '-WindowStyle Hidden' -and $launcher -match '-Sta')
 $launcherBytes = [IO.File]::ReadAllBytes($launcherPath)
 Assert-True '啟動器全 ASCII' (@($launcherBytes | Where-Object { $_ -gt 127 }).Count -eq 0)
+$openSshSetupBytes = [IO.File]::ReadAllBytes($openSshSetupPath)
+Assert-True 'NODEB OpenSSH 一鍵設定檔已產生' (Test-Path -LiteralPath $openSshSetupPath -PathType Leaf)
+Assert-True 'OpenSSH 一鍵設定檔全 ASCII' (@($openSshSetupBytes | Where-Object { $_ -gt 127 }).Count -eq 0)
+Assert-True 'OpenSSH 設定只允許在 NODEB 執行' ($openSshSetup -match 'EXPECTED_HOST=NODEB' -and $openSshSetup -match 'COMPUTERNAME')
+Assert-True 'OpenSSH 設定同時套用 Administrators 與 SYSTEM ACL' ($openSshSetup -match 'S-1-5-32-544' -and $openSshSetup -match 'S-1-5-18')
+Assert-True 'OpenSSH 防火牆只允許 NODEA 位址' ($openSshSetup -match 'CONTROLLER_IP=192\.168\.6\.63' -and $openSshSetup -match 'RemoteAddress')
+& $env:ComSpec /d /c ('"' + $openSshSetupPath + '" --self-test')
+Assert-True 'OpenSSH 一鍵設定內建自我測試通過' ($LASTEXITCODE -eq 0)
 
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 Write-Host ('  通過 ' + $script:Pass + '，失敗 ' + $script:Fail) `
