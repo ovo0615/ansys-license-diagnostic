@@ -6,7 +6,6 @@ AEDT Multi-PC Toolkit 2026 R1 - GUI NOEXE
 3. 雙擊 Run-MpiToolkit-GUI.bat；只有按「① 完整修復（管理員）」時才會要求系統管理員權限。
 
 本版新增：
-- NODEB 專用的 Setup-NODEB-OpenSSH.cmd：雙擊一次完成本機設定；最後由 NODEA 實際驗證金鑰登入。
 - GUI「⑤ 連線修復」。
 - 統一兩台的 tempdirectory 為 C:\AnsysWork\AedtTemp。
 - 自動備份 default.cfg。
@@ -23,7 +22,6 @@ AEDT Multi-PC Toolkit 2026 R1 - GUI NOEXE
 檔案：
 - START_HERE.html
 - Run-MpiToolkit-GUI.bat
-- Setup-NODEB-OpenSSH.cmd
 - MpiToolkit-GUI.ps1
 - Repair-AedtClusterNode.ps1
 - Register-IntelMpiCredential.ps1
