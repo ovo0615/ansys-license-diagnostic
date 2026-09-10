@@ -73,7 +73,7 @@ Assert-True '縮小視窗時分頁可捲動' ($source -match 'AutoScrollMinSize'
 Assert-True '路徑欄位會水平延展' ($source -match '\$box\.Anchor.*Right' -and $source -match '\$browse\.Anchor.*Right')
 Assert-True '同事版說明沒有 PowerShell 指令' ($guide -notmatch '(?i)powershell|<pre>|Set-Location|Get-Service')
 Assert-True '同事版說明完整涵蓋四個 GUI 頁面' ($guide -match '① 節點檢查' -and $guide -match '② 彙整報告' -and $guide -match '③ 建立串機設定' -and $guide -match '④ 套用與驗證')
-Assert-True '同事版說明包含 GUI ⑤ 連線修復' ($guide -match 'GUI ⑤：明早先做完整修復與雙機快速測試' -and $guide -match 'C:\\AnsysWork\\AedtTemp')
+Assert-True '同事版說明包含 GUI ⑤ 連線修復' ($guide -match 'GUI ⑤：完整修復與雙機快速測試' -and $guide -match 'C:\\AnsysWork\\AedtTemp')
 Assert-True '同事版說明包含固定連接埠與防火牆範圍' ($guide -match '55000.*55499' -and $guide -match '55500.*55999' -and $guide -match '32958')
 Assert-True '同事版說明已納入 MPI 帳密註冊' ($guide -match '註冊 MPI 帳密並驗證' -and $guide -match 'Domain\\user' -and $guide -notmatch '不要直接沿用舊 SOP')
 Assert-True '同事版說明含無指令快速測試與求解前清場' ($guide -match '雙機快速測試' -and $guide -match '只在主控電腦開啟 AEDT' -and $guide -match 'ANSYS_EM_EXEC_DIR')
