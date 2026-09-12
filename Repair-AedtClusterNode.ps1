@@ -48,20 +48,44 @@ function Test-TcpPort {
 }
 
 function Grant-TempAccess {
+    <#
+        讓目前使用者與 SYSTEM 對暫存目錄有寫入權；AEDT 的求解器是以 SYSTEM
+        起的服務去寫這個目錄，只給使用者權限不夠。
+
+        兩個地方刻意不照直覺寫：
+
+        1. 用 SID 不用帳號名稱。名稱（TADC\jeff.hong）要向網域控制站翻成 SID；
+           網域筆電帶出去、連不到 DC 的時候翻不動，會丟
+           「這項工作只有主要與次要領域間的信任關係才能執行」。
+           去客戶端做串機正是這個情境，所以這條路不能走。
+
+        2. 用 SetAccessControl('Access') 而不是 Set-Acl。Set-Acl 會連 Owner 一起寫回去，
+           而 Get-Acl 拿到的 Owner 是帳號名稱，於是又回到第 1 點的翻譯。
+           只寫 DACL 就不會碰到擁有者。
+
+        改權限失敗不該讓整支修復停住——真正重要的是「這個目錄寫不寫得進去」，
+        那個由呼叫端的寫入測試負責判定。這裡失敗只回報，不丟例外。
+    #>
     param([string] $Path)
-    $acl = Get-Acl -LiteralPath $Path
     $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
     $propagation = [Security.AccessControl.PropagationFlags]::None
-    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
-    $rules = @(
-        (New-Object Security.AccessControl.FileSystemAccessRule(
-            $currentUser, 'Modify', $inheritance, $propagation, 'Allow')),
-        (New-Object Security.AccessControl.FileSystemAccessRule(
-            $systemSid, 'FullControl', $inheritance, $propagation, 'Allow'))
-    )
-    foreach ($rule in $rules) { $acl.SetAccessRule($rule) }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    $currentSid  = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $systemSid   = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        $acl  = $item.GetAccessControl('Access')
+        $rules = @(
+            (New-Object Security.AccessControl.FileSystemAccessRule(
+                $currentSid, 'Modify', $inheritance, $propagation, 'Allow')),
+            (New-Object Security.AccessControl.FileSystemAccessRule(
+                $systemSid, 'FullControl', $inheritance, $propagation, 'Allow'))
+        )
+        foreach ($rule in $rules) { $acl.SetAccessRule($rule) }
+        $item.SetAccessControl($acl)
+        return [pscustomobject]@{ Granted = $true; Reason = '' }
+    } catch {
+        return [pscustomobject]@{ Granted = $false; Reason = $_.Exception.Message }
+    }
 }
 
 function Get-HydraServicePort {
@@ -142,10 +166,15 @@ Copy-Item -LiteralPath $cfgPath -Destination $backupCfg
 if (-not (Test-Path -LiteralPath $TempDirectory -PathType Container)) {
     New-Item -ItemType Directory -Path $TempDirectory | Out-Null
 }
-Grant-TempAccess -Path $TempDirectory
+$grant = Grant-TempAccess -Path $TempDirectory
+# 權限有沒有設成功是次要的，能不能寫才是結論——所以無論如何都做一次真的寫入測試。
 $probe = Join-Path $TempDirectory ('.write_test_' + [guid]::NewGuid().ToString('N') + '.tmp')
 try {
     [IO.File]::WriteAllText($probe, 'ok', [Text.Encoding]::ASCII)
+} catch {
+    $detail = '暫存目錄寫不進去：' + $TempDirectory
+    if (-not $grant.Granted) { $detail += '（權限設定也失敗：' + $grant.Reason + '）' }
+    throw $detail
 } finally {
     if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
 }

@@ -139,6 +139,40 @@ Assert-True 'list= 的值裡沒有落單的百分號' `
 Remove-Item -LiteralPath $r.Dir -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------------------
+# 這一條擋的是「看起來成功其實沒做到」：節點檔讀不到時，舊版會安靜地略過那一台，
+# 照樣產生 machines.txt 並回傳 0。少一台的清單完全看不出異常，拿去跑只會得到
+# 一個比預期小的叢集，而且沒有任何地方會說少了誰。
+# 這個情境在真機上由防毒或索引服務短暫鎖檔造成，是間歇性的——正因為間歇，
+# 更需要一條固定的測試把它釘住。
+Write-Host ''
+Write-Host '案例 10：節點報告讀不到時不能安靜地少一台' -ForegroundColor White
+$brokenDir = Join-Path ([System.IO.Path]::GetTempPath()) ('aedtcfg-broken-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$brokenNodes = Join-Path $brokenDir 'nodes'
+$brokenOut   = Join-Path $brokenDir 'out'
+New-Item -ItemType Directory -Path $brokenNodes -Force | Out-Null
+(New-Node -Name 'WS01') | ConvertTo-Json -Depth 10 |
+    Out-File -FilePath (Join-Path $brokenNodes 'n1.node.json') -Encoding utf8 -Force
+# 壞掉的第二份：內容不是合法 JSON，等同於讀取／解析失敗
+'{ this is not valid json' | Out-File -FilePath (Join-Path $brokenNodes 'n2.node.json') -Encoding utf8 -Force
+
+$global:LASTEXITCODE = 0
+& $Tool -From $brokenNodes -OutDir $brokenOut *> $null
+$brokenRc = $LASTEXITCODE
+$brokenMachines = $null
+$brokenMachinesPath = Join-Path $brokenOut 'machines.txt'
+if (Test-Path -LiteralPath $brokenMachinesPath) { $brokenMachines = Get-Content -LiteralPath $brokenMachinesPath -Raw }
+$brokenTodo = $null
+$brokenTodoPath = Join-Path $brokenOut '待辦清單.txt'
+if (Test-Path -LiteralPath $brokenTodoPath) { $brokenTodo = Get-Content -LiteralPath $brokenTodoPath -Raw }
+
+Assert-True '讀不到節點報告時離開碼不得為 0' ($brokenRc -ne 0) ('實際 ' + $brokenRc)
+Assert-True '待辦清單要講出哪一份讀不到' ($brokenTodo -match 'n2\.node\.json')
+Assert-True '待辦清單要警告清單可能少機器' ($brokenTodo -match '可能少了機器')
+# 仍然產生清單是刻意的：已知好的那台資訊不該丟掉。但離開碼與待辦清單必須說話。
+Assert-True '讀得到的那台仍要列出來' ($brokenMachines -match 'WS01')
+Remove-Item -LiteralPath $brokenDir -Recurse -Force -ErrorAction SilentlyContinue
+
+# ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '案例 9：task 數不得大於或等於核心數' -ForegroundColor White
 $r = Invoke-Generator @( (New-Node -Name 'WS01') ) -ExtraArgs @{ CoresPerNode = 4; TasksPerNode = 4 }

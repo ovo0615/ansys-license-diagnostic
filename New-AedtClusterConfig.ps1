@@ -113,14 +113,42 @@ if ($files.Count -eq 0) {
     exit 2
 }
 
+# 讀不到的節點檔不能當成「沒這台」。
+# 兩者的差別是：RSM 沒跑我們知道它不行，讀不到則是「不知道」——
+# 把不知道當成不行，就會安靜地生出一份少一台的機器清單，而且回報成功。
+# 這種「看起來成功其實沒做到」正是最難查的失效，所以下面會讓離開碼變成非 0。
+$unreadable = @()
+
+function Read-NodeFile {
+    <#
+        Windows 上檔案被防毒或索引器短暫鎖住是常態，尤其在機器忙的時候。
+        先重試幾次再認輸——第一次失敗就放棄會製造間歇性的錯誤結果。
+    #>
+    param([string] $Path, [int] $Attempts = 3)
+    $lastError = ''
+    for ($try = 1; $try -le $Attempts; $try++) {
+        try {
+            $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
+            if ([string]::IsNullOrWhiteSpace($text)) { throw '檔案是空的。' }
+            return [pscustomobject]@{ Ok = $true; Object = ($text | ConvertFrom-Json); Reason = '' }
+        } catch {
+            $lastError = $_.Exception.Message
+            if ($try -lt $Attempts) { Start-Sleep -Milliseconds (120 * $try) }
+        }
+    }
+    return [pscustomobject]@{ Ok = $false; Object = $null; Reason = $lastError }
+}
+
 $nodes = @()
 foreach ($f in $files) {
-    try {
-        $obj = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
-    } catch {
-        Write-Host ('  讀取失敗（略過）：' + (Split-Path -Leaf $f)) -ForegroundColor Yellow
+    $read = Read-NodeFile -Path $f
+    if (-not $read.Ok) {
+        Write-Host ('  讀取失敗：' + (Split-Path -Leaf $f)) -ForegroundColor Red
+        Write-Host ('    ' + $read.Reason) -ForegroundColor Yellow
+        $unreadable += [pscustomobject]@{ File = (Split-Path -Leaf $f); Reason = $read.Reason }
         continue
     }
+    $obj = $read.Object
     if (-not $obj.node) {
         Write-Host ('  不是節點報告（略過）：' + (Split-Path -Leaf $f)) -ForegroundColor Yellow
         continue
@@ -363,6 +391,19 @@ foreach ($e in $use) {
 }
 $null = $tb.AppendLine('')
 
+# 讀不到的檔案要列在最前面。它跟「這台不合格」不一樣：
+# 不合格是我們知道原因，讀不到是我們根本不知道那台是誰。
+if ($unreadable.Count -gt 0) {
+    $null = $tb.AppendLine('！！ 有節點報告讀不到，下面的機器清單可能少了機器 ！！')
+    foreach ($u in $unreadable) {
+        $null = $tb.AppendLine('  ' + $u.File + ' —— ' + $u.Reason)
+    }
+    $null = $tb.AppendLine('')
+    $null = $tb.AppendLine('  常見原因：檔案被防毒或索引服務暫時鎖住、複製過程中斷、檔案損毀。')
+    $null = $tb.AppendLine('  請確認這些檔案完整後重跑一次，不要直接使用下面的清單。')
+    $null = $tb.AppendLine('')
+}
+
 if ($unready.Count -gt 0 -and -not $IncludeUnready) {
     $null = $tb.AppendLine('已排除的機器：')
     foreach ($e in $unready) {
@@ -426,4 +467,15 @@ Write-Host '  請先跑 verify-batchoptions.cmd 對照該版本的選項拼法�
 Write-Host ''
 Write-Host '  本工具唯讀，未修改任何機器的設定。' -ForegroundColor Green
 Write-Host ''
+
+# 有節點檔讀不到就不能說成功。少一台的機器清單看起來完全正常，
+# 拿去跑會得到一個比預期小的叢集，而且沒有任何地方會告訴你少了誰。
+if ($unreadable.Count -gt 0) {
+    Write-Host ('=' * 60) -ForegroundColor Red
+    Write-Host ('  有 ' + $unreadable.Count + ' 份節點報告讀不到，機器清單可能少了機器。') -ForegroundColor Red
+    foreach ($u in $unreadable) { Write-Host ('    ' + $u.File + ' —— ' + $u.Reason) -ForegroundColor Yellow }
+    Write-Host '  請確認這些檔案沒有被防毒鎖住或損毀，再重跑一次。' -ForegroundColor Yellow
+    Write-Host ''
+    exit 3
+}
 exit 0

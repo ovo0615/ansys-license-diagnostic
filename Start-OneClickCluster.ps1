@@ -766,6 +766,13 @@ function Step-BuildConfig {
     if ($State.ProjectPath) { $arguments += @('-Project', (Quote-Argument $State.ProjectPath)) }
     $result = Invoke-ChildScript -ScriptName 'New-AedtClusterConfig.ps1' -Arguments $arguments -TimeoutSeconds 180
     if ($result.ExitCode -lt 0) { return @{ Status = 'Fail'; Detail = '設定產生失敗' } }
+    if ($result.ExitCode -eq 3) {
+        # 離開碼 3 = 有節點報告讀不到。機器清單還是會產生，但可能少一台，
+        # 而少一台的清單看起來完全正常——所以這裡不能報成功。
+        Write-Log '  有節點報告讀不到，機器清單可能少了機器。請看待辦清單，確認檔案完整後重跑這一步。'
+        return @{ Status = 'Fail'; Detail = '有節點報告讀不到，清單可能少機器' }
+    }
+    if ($result.ExitCode -ne 0) { return @{ Status = 'Warn'; Detail = ('設定產生回傳 ' + $result.ExitCode) } }
     $State.ConfigDir = $configOut
     Write-Log ('  輸出：' + $configOut)
     Write-Log '  第一次使用前請先跑 verify-batchoptions.cmd 確認選項拼法，再解開 run-batch.cmd 的註解。'
