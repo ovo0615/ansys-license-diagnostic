@@ -1770,7 +1770,7 @@ $fwRuleReadable = $true
 if ($fwProfiles.Count -gt 0) {
     # 規則先一次抓回來建索引，不要每個 filter 都 pipe 一次 Get-NetFirewallRule。
     # 每 pipe 一次就是一次完整查詢，數量一多就爆。
-    # 實測（NODEA，1122 條規則、80 個符合的 filter）：
+    # 實測（開發機，1122 條規則、80 個符合的 filter）：
     #   逐條 pipe          44.9 秒
     #   一次抓回來建索引     4.2 秒
     # 節點收集的預算是 60 秒（現場驗證清單 A9），光這一段就吃掉大半。

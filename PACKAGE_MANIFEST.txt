@@ -1,9 +1,9 @@
 AEDT Multi-PC Toolkit 2026 R1 - GUI NOEXE
 
 給同事的操作入口：
-1. 解壓縮全部檔案到 C:\AnsysWork\MpiToolkit。
-2. 雙擊 START_HERE.html 閱讀圖文說明。
-3. 雙擊 Run-MpiToolkit-GUI.bat；只有按「① 完整修復（管理員）」時才會要求系統管理員權限。
+1. 解壓縮全部檔案到 C:\AnsysWork\MpiToolkit（兩台都要）。
+2. 雙擊 一鍵串機.bat，填另一台的電腦名稱，按「開始」。兩台各按一次即可。
+3. 需要逐項操作時才改用 Run-MpiToolkit-GUI.bat；要看圖文說明看 START_HERE.html。
 
 本版新增：
 - GUI「⑤ 連線修復」。
@@ -18,8 +18,16 @@ AEDT Multi-PC Toolkit 2026 R1 - GUI NOEXE
 - GUI 加入 Intel MPI 原生帳密註冊與對端驗證；工具不接收密碼，也不把密碼放入命令列或報告。
 - GUI 加入「③ 雙機快速測試」；一次驗證 MPI 帳密、RSM、Hydra、兩節點 hostname 與既有 Ansys 程序。
 - GUI 內容會隨視窗大小延展；縮小時提供分頁捲軸。
+- 新增「一鍵串機」精靈：兩台各按一次，自動完成前置檢查、連通、節點檢查、
+  報告交換、彙整、修復、MPI 帳密註冊、雙機驗證與機器清單產生。
+- 精靈第一步即檢查帳號型態；用 Microsoft 帳戶登入會直接擋下並給出建立本機帳號的步驟。
+- 案件編號由兩台電腦名稱自動推導，兩台算出同一個，現場不必輸入。
+- 報告交換優先走 \對端\C$ 的管理共用；不通時自動退回 USB 模式並在畫面上講清楚下一步。
 
 檔案：
+- 一鍵串機.bat
+- 指定機組啟動器-範本.bat（填入兩台機器名稱後，兩台各雙擊一次，自動帶入對端）
+- Start-OneClickCluster.ps1
 - START_HERE.html
 - Run-MpiToolkit-GUI.bat
 - MpiToolkit-GUI.ps1

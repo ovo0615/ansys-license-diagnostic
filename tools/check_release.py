@@ -97,6 +97,11 @@ RULES = [
     ('訂單 / 案號', r'\b(OE|SO|PO|SR)#?\s*\d{6,}'),
     ('具名主機',
      r'\b(DESKTOP-[A-Z0-9]{7}|WIN-[A-Z0-9]{11}|[A-Za-z][A-Za-z0-9]{2,}-PC)\b'),
+    # 本公司筆電與桌機的命名（兩個英文字母加三到四位數）。名字本身不敏感，
+    # 但它們是內部資產清單的一部分，公開版庫不該帶著走。曾經真的漏進去過：
+    # 測試用的兩台機器名稱寫進了測試檔與 commit 訊息，推之前才發現。
+    # 上面那條「具名主機」抓不到這種短名，所以另外列一條。
+    ('內部機器命名', r'\b(?i:nb|dt)\d{3,4}\b'),
     ('License INCREMENT 行', r'INCREMENT\s+\w+\s+ansyslmd'),
     ('License VENDOR_STRING', r'VENDOR_STRING\s*=\s*customer\s*:\s*\d+'),
     ('SERVER 行帶 HostID', r'^\s*SERVER\s+\S+\s+[0-9A-Fa-f]{12}\s'),
