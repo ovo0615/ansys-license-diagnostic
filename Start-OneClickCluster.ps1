@@ -575,6 +575,34 @@ function Test-IsAdministrator {
     } catch { return $false }
 }
 
+function Update-ProcessEnvironmentFromMachine {
+    <#
+        把機器層級的環境變數重新讀進「本行程」。
+
+        為什麼需要：步驟 6 改的是機器層級的值，但本精靈的環境是啟動當下抓的，
+        之後開出來的子行程（步驟 8 的驗證、步驟 9 的設定產生）繼承的還是舊值。
+        於是會出現「修好了但驗證還是失敗」，而使用者唯一能想到的辦法是重開機。
+
+        實測：I_MPI_PORT_RANGE 撞到 Windows 保留埠時 mpiexec 完全跑不起來；
+        只要啟動 mpiexec 的那個行程拿到新的範圍就正常，不必重開機、
+        也不必重啟任何服務。所以這裡刷新就夠了。
+    #>
+    param([string[]] $Names)
+    $changed = @()
+    foreach ($name in @($Names)) {
+        try {
+            $machineValue = [Environment]::GetEnvironmentVariable($name, 'Machine')
+            if ([string]::IsNullOrWhiteSpace($machineValue)) { continue }
+            $current = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if ($current -ne $machineValue) {
+                [Environment]::SetEnvironmentVariable($name, $machineValue, 'Process')
+                $changed += ($name + ' = ' + $machineValue)
+            }
+        } catch { }
+    }
+    return $changed
+}
+
 function Write-Log {
     param([string] $Text, [string] $Color = '')
     if ([string]::IsNullOrEmpty($Text)) { return }
@@ -993,6 +1021,17 @@ function Step-Repair {
         return @{ Status = 'Fail'; Detail = '未取得系統管理員權限' }
     }
     Write-Log ('  修復結束，代碼 ' + $code + '。報告：' + $reportPath)
+
+    # 修復改的是機器層級的值，本精靈的環境還是舊的。不刷新的話，
+    # 步驟 8 的驗證會用舊的埠範圍跑，結果是「修好了但驗證還是失敗」。
+    $refreshed = Update-ProcessEnvironmentFromMachine -Names @(
+        'I_MPI_PORT_RANGE', 'ANSYSEM_LISTEN_PORT_RANGE',
+        'I_MPI_HYDRA_SERVICE_PORT', 'ANSYS_EM_EXEC_DIR')
+    if ($refreshed.Count -gt 0) {
+        Write-Log '  已把新的設定載進本工具，後面的步驟會用新值（不必重開機）：'
+        foreach ($item in $refreshed) { Write-Log ('    ' + $item) }
+    }
+
     if ($code -eq 0) { return @{ Status = 'Pass'; Detail = '修復完成' } }
     return @{ Status = 'Warn'; Detail = ('修復回傳 ' + $code + '，請看 repair 報告') }
 }
@@ -1037,10 +1076,21 @@ function Step-Verify {
     $result = Invoke-ChildScript -ScriptName 'Register-IntelMpiCredential.ps1' `
         -Arguments @('-Peer', (Quote-Argument $State.Peer), '-VerifyOnly') -TimeoutSeconds 300
     if ($result.ExitCode -eq 0) { return @{ Status = 'Pass'; Detail = 'MPI 帳密、RSM、Hydra、兩節點 hostname 全通' } }
-    Write-Log '  驗證沒過。依現場經驗，先查這三件事：'
-    Write-Log '    1. 兩台的本機帳號名稱與密碼是否逐字相同'
-    Write-Log '    2. 對端的 Electromagnetics RSM 與 Intel Hydra 服務是否在跑（去對端跑一次步驟 6）'
-    Write-Log '    3. 對端防火牆是否放行（步驟 6 會建規則，但要在對端那一台執行才算數）'
+    Write-Log '  驗證沒過。先看上面那幾行實際的錯誤訊息，再照下面順序查：'
+    Write-Log ''
+    Write-Log '  ▶ 先確認這是不是「本機就跑不起來」，而不是跨機問題：'
+    Write-Log ('    ' + $State.AedtRoot + ' 底下的 mpiexec 加上 -n 1 hostname 試一次。')
+    Write-Log '    本機單機也失敗的話，跨機的訊息都是假象，問題在本機。'
+    Write-Log ''
+    Write-Log '  常見原因，由高到低：'
+    Write-Log '    1. 連接埠範圍撞到 Windows 保留埠。錯誤會寫 bind error / errno = 10013，'
+    Write-Log '       但後面接的是「cannot launch processes on remote host」，很容易看錯方向。'
+    Write-Log ('       目前 I_MPI_PORT_RANGE = ' + [Environment]::GetEnvironmentVariable('I_MPI_PORT_RANGE', 'Process'))
+    Write-Log '       用 netsh int ipv4 show excludedportrange protocol=tcp 對照；重跑步驟 6 會自動改。'
+    Write-Log '    2. 兩台的帳號無法互相登入（工作群組要同名同密碼；網域要同一個網域）。'
+    Write-Log '       單獨驗這一項：mpiexec -validate -host 對端名稱。回 SUCCESS 就不是帳號問題。'
+    Write-Log '    3. 對端的 RSM 與 Intel Hydra 服務沒在跑（去對端跑一次步驟 6）。'
+    Write-Log '    4. 對端防火牆沒放行（步驟 6 會建規則，但要在對端那一台執行才算數）。'
     return @{ Status = 'Fail'; Detail = ('驗證回傳 ' + $result.ExitCode) }
 }
 

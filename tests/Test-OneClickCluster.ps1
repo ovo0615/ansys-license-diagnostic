@@ -372,11 +372,21 @@ Assert-True '缺料時要指名還缺哪一台'        ($wizardText -match '還�
 # 只拿到身分卡片卻沒拿到節點報告，是複製時漏檔的典型症狀，要講出來。
 Assert-True '只收到身分卡片時要點出來'      ($wizardText -match '的身分卡片')
 # Start-Process -PassThru 拿不到離開碼，必須用 Diagnostics.Process。
-Assert-True '不再用 Start-Process 取離開碼' ($wizardText -notmatch '-PassThru?
+Assert-True '不再用 Start-Process 取離開碼' ($wizardText -notmatch '-PassThru
+?
 ')
 Assert-True '子程序改用 Diagnostics.Process' ($wizardText -match 'New-Object Diagnostics\.Process')
 Assert-True '離開碼判定走專用函式'          ($wizardText -match 'Test-ExitCodeFailed \$result\.ExitCode')
 Assert-True '有區分「沒啟動」與「離開碼異常」' ($wizardText -match '子程序沒有啟動')
+# 步驟 6 改的是機器層級的環境變數，但本精靈的環境是啟動當下抓的。
+# 不刷新的話步驟 8 會用舊的埠範圍跑，變成「修好了但驗證還是失敗」，
+# 而使用者唯一想得到的辦法是重開機——實測根本不需要。
+Assert-True '修復後會刷新本行程環境'        ($wizardText -match 'Update-ProcessEnvironmentFromMachine')
+Assert-True '刷新涵蓋 MPI 埠範圍'           ($wizardText -match "'I_MPI_PORT_RANGE', 'ANSYSEM_LISTEN_PORT_RANGE'")
+Assert-True '會告訴使用者不必重開機'        ($wizardText -match '不必重開機')
+# 驗證失敗時要先教人分辨「本機就不行」與「跨機不行」——訊息本身會誤導。
+Assert-True '驗證失敗要先排除本機問題'      ($wizardText -match '本機單機也失敗的話')
+Assert-True '驗證失敗要點名保留埠這個原因'  ($wizardText -match 'errno = 10013')
 
 Write-Host ''
 Write-Host ('  通過 ' + $script:Passed + ' 項，失敗 ' + $script:Failed + ' 項。') -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
