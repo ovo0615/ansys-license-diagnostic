@@ -122,6 +122,29 @@ Assert-Equal '對端資料還沒到時不下定論'            'MANUAL' $noPeer.
 $bothDomain = Get-AccountCompatibility -LocalKind 'Domain' -LocalUser 'jeff' -PeerKind 'Domain' -PeerUser 'jeff'
 Assert-Equal '兩台都是網域帳號可以往下做'          'OK' $bothDomain.Level
 
+# 網域帳號不必兩台同名：對端是拿送過去的帳密去登入，不看它自己登入的是誰。
+# 同事的機器上登著同事的帳號，是正常的，不該被擋。
+$domainDiffUser = Get-AccountCompatibility -LocalKind 'Domain' -LocalUser 'jeff' `
+    -PeerKind 'Domain' -PeerUser 'amy' -LocalDomain 'CORP' -PeerDomain 'CORP'
+Assert-Equal '同網域但兩台登入者不同名仍可以'      'OK' $domainDiffUser.Level
+
+# 但不同網域一定不行。這種組合畫面上看起來完全正常，會一路做到第 8 步才失敗，
+# 而且訊息長得像網路問題——所以要在第 1 步就擋。
+$crossDomain = Get-AccountCompatibility -LocalKind 'Domain' -LocalUser 'jeff' `
+    -PeerKind 'Domain' -PeerUser 'jeff' -LocalDomain 'CORP' -PeerDomain 'OTHERCORP'
+Assert-Equal '兩台在不同網域要擋下來'              'BLOCK' $crossDomain.Level
+Assert-True  '並且要講出是哪兩個網域'              ($crossDomain.Summary -match 'CORP' -and $crossDomain.Summary -match 'OTHERCORP')
+
+$sameDomainCase = Get-AccountCompatibility -LocalKind 'Domain' -LocalUser 'jeff' `
+    -PeerKind 'Domain' -PeerUser 'jeff' -LocalDomain 'corp' -PeerDomain 'CORP'
+Assert-Equal '網域名稱大小寫不同視為同一個'        'OK' $sameDomainCase.Level
+
+# 只有一邊拿得到網域名稱時不能下定論——沒有證據就不該擋，也不該說沒問題。
+$partialDomain = Get-AccountCompatibility -LocalKind 'Domain' -LocalUser 'jeff' `
+    -PeerKind 'Domain' -PeerUser 'jeff' -LocalDomain 'CORP' -PeerDomain ''
+Assert-Equal '對端網域不明時不擋'                  'OK' $partialDomain.Level
+Assert-True  '網域情況要提醒連得到網域控制站'      (($bothDomain.Advice -join '') -match '網域控制站')
+
 $mixed = Get-AccountCompatibility -LocalKind 'Domain' -LocalUser 'jeff' -PeerKind 'Local' -PeerUser 'ansys'
 Assert-Equal '一邊網域一邊本機要擋下來'            'BLOCK' $mixed.Level
 

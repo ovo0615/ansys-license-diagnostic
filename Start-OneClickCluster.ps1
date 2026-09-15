@@ -177,8 +177,10 @@ function Get-AccountCompatibility {
     param(
         [string] $LocalKind,
         [string] $LocalUser,
-        [string] $PeerKind = '',
-        [string] $PeerUser = ''
+        [string] $PeerKind   = '',
+        [string] $PeerUser   = '',
+        [string] $LocalDomain = '',
+        [string] $PeerDomain  = ''
     )
     $cloudKinds = @('MicrosoftAccount', 'AzureAd')
 
@@ -211,10 +213,26 @@ function Get-AccountCompatibility {
                 Advice  = @('請讓兩台都用同一個網域帳號登入，或都改用同名同密碼的本機帳號。')
             }
         }
+        if ($LocalDomain -and $PeerDomain -and
+            ($LocalDomain.ToLowerInvariant() -ne $PeerDomain.ToLowerInvariant())) {
+            # 兩台都「在網域裡」但不是同一個網域。這種組合在畫面上看起來完全正常，
+            # 一路做到第 8 步才會失敗，而且訊息長得像網路問題。
+            return [pscustomobject]@{
+                Level   = 'BLOCK'
+                Summary = ('兩台在不同的網域：本機 ' + $LocalDomain + '、對端 ' + $PeerDomain + '。')
+                Advice  = @(
+                    '對端要能認得你送過去的帳密，兩台必須屬於同一個網域（或有互信關係）。',
+                    '請改用同一個網域的帳號登入兩台，或改用同名同密碼的本機系統管理員帳號。'
+                )
+            }
+        }
         return [pscustomobject]@{
             Level   = 'OK'
             Summary = '兩台都是網域帳戶，可直接做 Intel MPI 帳密註冊。'
-            Advice  = @()
+            Advice  = @(
+                '網域帳號不必兩台同名——對端是拿你送過去的帳密去登入，不看它自己登入的是誰。',
+                '但求解當下兩台都要連得到網域控制站，帶出公司就可能驗不過。'
+            )
         }
     }
     if ($LocalKind -eq 'Local') {
@@ -638,7 +656,8 @@ function Step-Exchange {
                     $State.PeerIdentity = $record
                     Write-Log ('  對端帳號：' + $record.userName + '（' + (Get-AccountKindLabel $record.accountKind) + '）')
                     $compat = Get-AccountCompatibility -LocalKind $State.AccountKind -LocalUser $State.UserName `
-                        -PeerKind $record.accountKind -PeerUser $record.userName
+                        -PeerKind $record.accountKind -PeerUser $record.userName `
+                        -LocalDomain $State.UserDomain -PeerDomain ([string]$record.userDomain)
                     $State.AccountCompat = $compat
                     Write-Log ('  帳號比對：' + $compat.Summary)
                     foreach ($line in $compat.Advice) { Write-Log ('    ' + $line) }
