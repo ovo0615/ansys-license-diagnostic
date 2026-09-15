@@ -372,6 +372,45 @@ $f = Invoke-Merge @(
 Assert-Finding -Case '案例17' -Findings $f -TitleLike '修補版號各機不同' -Absent
 
 # ---------------------------------------------------------------------------
+# 實機事故：NB 那一台沒有 ANSYS_EM_EXEC_DIR，因為它沒跑過修復。
+# 症狀不是報錯，是求解卡在「Determining memory availability on distributed
+# machines」不動——完全看不出跟環境變數有關，查了很久才發現。
+# 這一項是修復步驟會設的東西，沒設就等於那台沒被整備過。
+Write-Host ''
+Write-Host '案例 18：有機器沒設 ANSYS_EM_EXEC_DIR，要當成確定問題' -ForegroundColor White
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01')
+    (New-Node -Name 'WS02' -ExecDir '')
+)
+Assert-Finding -Case '案例18' -Findings $f -TitleLike 'WS02 沒有設定 ANSYS_EM_EXEC_DIR' `
+    -Level 'CONFIRMED' -FixAction 'set-ansys-em-exec-dir'
+Assert-Finding -Case '案例18' -Findings $f -TitleLike 'WS02 沒有設定 ANSYS_EM_EXEC_DIR' `
+    -DetailLike 'Determining memory availability'
+
+# 兩台都設好就要說正常，不要製造雜訊
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01')
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例18' -Findings $f -TitleLike '每台都設好了 ANSYS_EM_EXEC_DIR' -Level 'OK'
+Assert-Finding -Case '案例18' -Findings $f -TitleLike '沒有設定 ANSYS_EM_EXEC_DIR' -Absent
+
+# 路徑不同只列疑點：可能是安裝位置不同但版本相同，不能斷定一定不行
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -ExecDir 'C:\Program Files\ANSYS Inc\v261\AnsysEM')
+    (New-Node -Name 'WS02' -ExecDir 'D:\Ansys\v261\AnsysEM')
+)
+Assert-Finding -Case '案例18' -Findings $f -TitleLike 'ANSYS_EM_EXEC_DIR 各機路徑不同' -Level 'SUSPECT'
+
+# 舊版報告沒有這個欄位時要說「比不了」，不能當成「沒設定」
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -NoClusterEnv $true)
+    (New-Node -Name 'WS02' -NoClusterEnv $true)
+)
+Assert-Finding -Case '案例18' -Findings $f -TitleLike '節點報告沒有串機環境變數資料' -Level 'MANUAL'
+Assert-Finding -Case '案例18' -Findings $f -TitleLike '沒有設定 ANSYS_EM_EXEC_DIR' -Absent
+
+# ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 Write-Host ('  通過 ' + $script:Pass + '，失敗 ' + $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })

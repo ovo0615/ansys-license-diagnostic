@@ -1047,6 +1047,51 @@ function Invoke-MergeMode {
     }
 
     # 4. RSM
+    Write-Step '比對串機環境變數'
+    # ANSYS_EM_EXEC_DIR 是 RSM 以 MPI 緊密整合啟動 AEDT 引擎時必要的。
+    # 缺了不會報錯，會卡在求解初期查詢記憶體那一步不動——實機踩過。
+    $execDirMissing = @()
+    $execDirValues  = @{}
+    $envDataSeen    = $false
+    foreach ($n in $nodes) {
+        if ($null -eq $n.node.clusterEnv) { continue }
+        $envDataSeen = $true
+        $value = [string]$n.node.clusterEnv.ANSYS_EM_EXEC_DIR
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $execDirMissing += $n.node.computerName
+        } else {
+            $execDirValues[$n.node.computerName] = $value
+        }
+    }
+    if (-not $envDataSeen) {
+        Add-Finding -Level 'MANUAL' -Title '節點報告沒有串機環境變數資料' `
+            -Detail '這些節點報告是舊版工具產生的，無法比對 ANSYS_EM_EXEC_DIR 等設定。' `
+            -Fix '兩台都用新版重跑一次節點檢查。'
+    } elseif ($execDirMissing.Count -gt 0) {
+        Add-Finding -Level 'CONFIRMED' -Title (($execDirMissing -join '、') + ' 沒有設定 ANSYS_EM_EXEC_DIR') `
+            -Detail ('RSM 以 MPI 緊密整合啟動 AEDT 引擎時需要這個環境變數。' + [Environment]::NewLine +
+                     '缺了不會跳錯誤訊息，求解會卡在「Determining memory availability on distributed machines」' + [Environment]::NewLine +
+                     '之類的地方不動，看不出跟環境變數有關。' + [Environment]::NewLine +
+                     '沒設通常就代表那台沒有跑過修復步驟。') `
+            -Fix '在這幾台各跑一次修復（一鍵串機的步驟 6），然後重新啟動 Electromagnetics RSM 服務。' `
+            -FixAction 'set-ansys-em-exec-dir' -FixOn (($execDirMissing -join ','))
+    } else {
+        $distinctExec = @($execDirValues.Values | Select-Object -Unique)
+        if ($distinctExec.Count -gt 1) {
+            $detail = '各機器的 ANSYS_EM_EXEC_DIR：' + [Environment]::NewLine
+            foreach ($k in ($execDirValues.Keys | Sort-Object)) {
+                $detail += '  ' + $k + ' : ' + $execDirValues[$k] + [Environment]::NewLine
+            }
+            Add-Finding -Level 'SUSPECT' -Title 'ANSYS_EM_EXEC_DIR 各機路徑不同' `
+                -Detail ($detail + '串機要求各節點的 AEDT 安裝路徑相同。') `
+                -Fix '把各機的 AEDT 安裝到相同路徑，或確認這些路徑指向同一個版本。' `
+                -FixAction 'set-ansys-em-exec-dir' -FixOn 'all'
+        } else {
+            Add-Finding -Level 'OK' -Title '每台都設好了 ANSYS_EM_EXEC_DIR' `
+                -Detail ('值：' + $distinctExec[0])
+        }
+    }
+
     Write-Step '比對 RSM 狀態'
     $noRsm  = @($nodes | Where-Object { -not $_.node.rsm.installed })
     $offRsm = @($nodes | Where-Object { $_.node.rsm.installed -and -not $_.node.rsm.running })
@@ -1496,6 +1541,18 @@ if ($installs.Count -eq 0) {
 Write-Head 'RSM 服務'
 
 $rsmSvcs = Get-ServiceLike -Pattern 'RSM'
+# 串機必要的環境變數。這些是修復步驟會設的東西，沒設就代表那台沒跑過修復——
+# 而症狀不是報錯，是求解卡在「Determining memory availability on distributed machines」
+# 那種地方不動，完全看不出跟環境變數有關。
+$clusterEnvNames = @('ANSYS_EM_EXEC_DIR', 'ANSYSEM_LISTEN_PORT_RANGE',
+                     'I_MPI_PORT_RANGE', 'I_MPI_HYDRA_SERVICE_PORT')
+$clusterEnv = [ordered]@{}
+foreach ($envName in $clusterEnvNames) {
+    $envValue = ''
+    try { $envValue = [string][Environment]::GetEnvironmentVariable($envName, 'Machine') } catch { $envValue = '' }
+    $clusterEnv[$envName] = (Protect-Text $envValue)
+}
+
 $rsmJson = [ordered]@{ installed = $false; running = $false; status = ''; services = @() }
 
 if ($rsmSvcs.Count -eq 0) {
@@ -1956,6 +2013,7 @@ $nodeBlock = [ordered]@{
     collectedAt  = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
     aedt         = @($aedtJson)
     rsm          = $rsmJson
+    clusterEnv   = [pscustomobject]$clusterEnv
     mpi          = [ordered]@{ detected = @($mpiDetected); binaries = @($mpiBinaries | Select-Object -Unique) }
     adapters     = @($adapterJson)
     selfResolve  = @($selfAddrs | ForEach-Object { Protect-Text $_ })

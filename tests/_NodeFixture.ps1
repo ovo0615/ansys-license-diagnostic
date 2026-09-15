@@ -32,7 +32,9 @@ function New-Node {
         [string] $CaseId   = 'TEST-001',
         [int]    $Schema   = 1,
         [bool]   $NoAedt   = $false,
-        [bool]   $NoTempDir= $false
+        [bool]   $NoTempDir= $false,
+        [string] $ExecDir  = 'C:\Program Files\ANSYS Inc\v261\AnsysEM',
+        [bool]   $NoClusterEnv = $false
     )
 
     $adapters = @()
@@ -87,6 +89,14 @@ function New-Node {
             physicalCores = 16; logicalCores = 32; memoryGB = 128
             collectedAt = '2026-09-07T10:00:00+08:00'
             aedt = $aedt
+            clusterEnv = $(if ($NoClusterEnv) { $null } else {
+                [pscustomobject]@{
+                    ANSYS_EM_EXEC_DIR        = $ExecDir
+                    ANSYSEM_LISTEN_PORT_RANGE = '56000:56499'
+                    I_MPI_PORT_RANGE          = '56500:56999'
+                    I_MPI_HYDRA_SERVICE_PORT  = '8680'
+                }
+            })
             rsm  = [pscustomobject]@{
                 installed = $true; running = $RsmRunning
                 status = $(if ($RsmRunning) { 'Running' } else { 'Stopped' })
