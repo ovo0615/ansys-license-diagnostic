@@ -68,3 +68,6 @@ repair_reports/
 指定機組啟動器-*.bat
 !指定機組啟動器-範本.bat
 測試版-*.bat
+
+# 客戶交付包（由 tools/build_package.py 產生）
+AEDT_Multi_PC_Toolkit_*.zip

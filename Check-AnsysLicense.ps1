@@ -63,7 +63,7 @@
     一般診斷。
 
 .EXAMPLE
-    .\Check-AnsysLicense.ps1 -CaseId TADC-2026-0042 -Feature ansys
+    .\Check-AnsysLicense.ps1 -CaseId CASE-2026-0042 -Feature ansys
     指定案件編號，並實際測試能不能取得 ansys 這個 feature。
 
 .EXAMPLE
