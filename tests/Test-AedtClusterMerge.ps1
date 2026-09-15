@@ -73,17 +73,22 @@ function Assert-Finding {
         [string] $Level,
         [string] $DetailLike,
         [string] $FixAction,
+        # 修復建議要給得出可執行的指令，不能只說「請調整某某設定」。
+        # 這一項讓那個要求變成可以被測的東西。
+        [string] $FixLike,
         [switch] $Absent
     )
     $hits = @($Findings | Where-Object {
         $_.title -like ('*' + $TitleLike + '*') -and (-not $Level -or $_.level -eq $Level) -and
         (-not $DetailLike -or ([string]$_.detail) -like ('*' + $DetailLike + '*')) -and
-        (-not $FixAction -or ([string]$_.fixAction) -eq $FixAction)
+        (-not $FixAction -or ([string]$_.fixAction) -eq $FixAction) -and
+        (-not $FixLike -or ([string]$_.fixText) -like ('*' + $FixLike + '*'))
     })
     $want  = if ($Absent) { '不該出現' } else { '應出現' }
     $what  = if ($TitleLike) { '「' + $TitleLike + '」' } else { '任何 ' + $Level + ' 結論' }
     if ($DetailLike) { $what += '（說明含「' + $DetailLike + '」）' }
     if ($FixAction) { $what += '（修復動作為「' + $FixAction + '」）' }
+    if ($FixLike) { $what += '（處理方式含「' + $FixLike + '」）' }
     $ok    = if ($Absent) { $hits.Count -eq 0 } else { $hits.Count -gt 0 }
     if ($ok) {
         $script:Pass++
@@ -394,6 +399,52 @@ $f = Invoke-Merge @(
 )
 Assert-Finding -Case '案例18' -Findings $f -TitleLike '每台都設好了 ANSYS_EM_EXEC_DIR' -Level 'OK'
 Assert-Finding -Case '案例18' -Findings $f -TitleLike '沒有設定 ANSYS_EM_EXEC_DIR' -Absent
+
+# ---------------------------------------------------------------------------
+# 實機事故：AEDT 把 Hyper-V 虛擬網卡的位址（172.21.96.1）寫進遠端引擎的命令列，
+# 叫引擎回連。對端沒有那個網段的路由，於是引擎永遠連不回來，
+# 求解卡在「Determining memory availability on distributed machines」不動。
+#
+# 原本只有「有虛擬介面」這條【可疑】，但有虛擬介面本身不會出事——
+# 排在實體介面前面才會。Metric 越小越優先。
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '案例 19：虛擬網卡優先權高於實體網卡，要當成確定問題' -ForegroundColor White
+# 就是實機那一組：vEthernet Metric 15、乙太網路 Metric 25
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -VirtualNics 1 -RealMetric 25 -VirtualMetric 15)
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
+    -Level 'CONFIRMED' -FixAction 'fix-network-topology'
+Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
+    -DetailLike 'Determining memory availability'
+# 處理指令要直接給，不要只說「請調整優先權」
+Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
+    -FixLike 'Set-NetIPInterface'
+
+# 虛擬介面排在後面是常態，不可以亮確定燈——不然幾乎每台都會亮，燈就不值錢了
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -VirtualNics 1 -RealMetric 25 -VirtualMetric 40)
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例19' -Findings $f -TitleLike '虛擬網卡優先權高於實體網卡' -Absent
+Assert-Finding -Case '案例19' -Findings $f -TitleLike '虛擬或 VPN 介面'
+
+# 完全沒有虛擬介面時兩條都不該出現
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01')
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例19' -Findings $f -TitleLike '虛擬網卡優先權高於實體網卡' -Absent
+
+# 舊版報告沒有 metric 欄位時要說「讀不到」，不能猜
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -VirtualNics 1 -RealMetric $null -VirtualMetric $null)
+    (New-Node -Name 'WS02' -RealMetric $null)
+)
+Assert-Finding -Case '案例19' -Findings $f -TitleLike '讀不到網路介面的優先權' -Level 'MANUAL'
+Assert-Finding -Case '案例19' -Findings $f -TitleLike '虛擬網卡優先權高於實體網卡' -Absent
 
 # 路徑不同只列疑點：可能是安裝位置不同但版本相同，不能斷定一定不行
 $f = Invoke-Merge @(

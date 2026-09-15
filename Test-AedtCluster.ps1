@@ -463,6 +463,39 @@ function Get-PathLocality {
     }
 }
 
+function Get-VirtualAdapterPriority {
+    <#
+        判斷「虛擬介面是不是排在實體介面前面」。
+
+        Metric 越小越優先。AEDT 啟動遠端求解引擎時，會把自己認定的位址
+        寫進引擎的命令列，叫引擎回連——挑的就是優先的那一個介面。
+        虛擬介面（Hyper-V／WSL／VPN）若優先，遠端會拿到一個它根本沒有路由的位址，
+        於是永遠連不回來。
+
+        症狀是求解卡在「Determining memory availability on distributed machines」
+        不動，錯誤訊息完全沒提到網卡——實機踩過，查很久。
+
+        回傳 Blocking = $true 代表「確定會出事」，不是「可能」。
+    #>
+    param([object[]] $Adapters = @())
+    $withMetric = @($Adapters | Where-Object { $null -ne $_ -and $null -ne $_.metric })
+    $virtual  = @($withMetric | Where-Object { $_.isVirtual })
+    $physical = @($withMetric | Where-Object { -not $_.isVirtual })
+
+    if ($virtual.Count -eq 0 -or $physical.Count -eq 0) {
+        return [pscustomobject]@{ Blocking = $false; Known = ($withMetric.Count -gt 0)
+                                  TopVirtual = $null; TopPhysical = $null }
+    }
+    $bestVirtual  = @($virtual  | Sort-Object { [int]$_.metric })[0]
+    $bestPhysical = @($physical | Sort-Object { [int]$_.metric })[0]
+    return [pscustomobject]@{
+        Blocking    = ([int]$bestVirtual.metric -lt [int]$bestPhysical.metric)
+        Known       = $true
+        TopVirtual  = $bestVirtual
+        TopPhysical = $bestPhysical
+    }
+}
+
 function Get-ActiveAdapters {
     <#
         列出有 IPv4 位址的介面。虛擬與 VPN 介面另外標記——AEDT 串機要求
@@ -482,6 +515,16 @@ function Get-ActiveAdapters {
                     PrefixLen = $a.PrefixLength
                     Gateway   = $(if ($c.IPv4DefaultGateway) { @($c.IPv4DefaultGateway)[0].NextHop } else { $null })
                     IsVirtual = (("" + $c.InterfaceAlias + ' ' + $c.InterfaceDescription) -match $virtualPattern)
+                    Metric    = $(
+                        # Metric 決定 Windows 認為哪個介面優先。AEDT 啟動遠端引擎時，
+                        # 會把「我的位址」寫進引擎的命令列——挑的就是優先的那一個。
+                        # 虛擬介面若排在實體介面前面，遠端就會拿到一個連不到的位址。
+                        try {
+                            $mi = Get-NetIPInterface -InterfaceIndex $c.InterfaceIndex `
+                                    -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1
+                            if ($mi) { [int]$mi.InterfaceMetric } else { $null }
+                        } catch { $null }
+                    )
                 }
             }
         }
@@ -498,6 +541,7 @@ function Get-ActiveAdapters {
                         PrefixLen = $null
                         Gateway   = $(if ($n.DefaultIPGateway) { @($n.DefaultIPGateway)[0] } else { $null })
                         IsVirtual = ($n.Description -match $virtualPattern)
+                        Metric    = $null   # WMI 退路拿不到，比對時會當成「不知道」
                     }
                 }
             }
@@ -1211,9 +1255,23 @@ function Invoke-MergeMode {
     $subnets = @{}
     $multiNic = @()
     $withVirtual = @()
+    $virtualWins = @()      # 虛擬介面壓過實體介面的機器——這一種會真的出事
+    $metricUnknown = @()
     foreach ($n in $nodes) {
         $real = @($n.node.adapters | Where-Object { -not $_.isVirtual })
         $virt = @($n.node.adapters | Where-Object { $_.isVirtual })
+
+        # 有虛擬介面不一定有事，排在實體介面前面才有事。
+        $prio = Get-VirtualAdapterPriority -Adapters @($n.node.adapters)
+        if ($virt.Count -gt 0 -and -not $prio.Known) {
+            $metricUnknown += $n.node.computerName
+        } elseif ($prio.Blocking) {
+            $virtualWins += [pscustomobject]@{
+                Machine  = $n.node.computerName
+                Virtual  = $prio.TopVirtual
+                Physical = $prio.TopPhysical
+            }
+        }
         # 只有「實體網卡不只一張」才算問題。多一張 Hyper-V 介面很常見，
         # 把它也算成【可疑】會讓報告在幾乎每個客戶那裡都亮燈，燈就不值錢了。
         if ($real.Count -gt 1) {
@@ -1243,6 +1301,31 @@ function Invoke-MergeMode {
         } else {
             Add-Finding -Level 'OK' -Title ('每台都在的網段：' + ($sharedSubnet -join '、'))
         }
+    }
+
+    # 虛擬介面優先權壓過實體介面 —— 這個不是「可疑」，是會卡死
+    foreach ($w in $virtualWins) {
+        $detail = ('AEDT 啟動遠端求解引擎時，會把自己認定的位址寫進引擎的命令列，' +
+                   '叫引擎回連。它挑的是 Metric 最小（最優先）的那一個介面。' + [Environment]::NewLine + [Environment]::NewLine +
+                   '  虛擬介面 : ' + $w.Virtual.alias + '  ' + $w.Virtual.ipv4 + '  Metric ' + $w.Virtual.metric + [Environment]::NewLine +
+                   '  實體介面 : ' + $w.Physical.alias + '  ' + $w.Physical.ipv4 + '  Metric ' + $w.Physical.metric + [Environment]::NewLine + [Environment]::NewLine +
+                   '虛擬介面排在前面，對端會拿到一個它沒有路由的位址，永遠連不回來。' + [Environment]::NewLine +
+                   '症狀是求解卡在「Determining memory availability on distributed machines」' + [Environment]::NewLine +
+                   '不動，而錯誤訊息完全沒提到網卡。')
+        Add-Finding -Level 'CONFIRMED' -Title ($w.Machine + ' 的虛擬網卡優先權高於實體網卡') `
+            -Detail $detail `
+            -Fix ('以系統管理員身分執行，把虛擬介面的優先權降到實體介面後面：' + [Environment]::NewLine +
+                  "  Set-NetIPInterface -InterfaceAlias '" + $w.Virtual.alias + "' -AddressFamily IPv4 -InterfaceMetric " +
+                  ([int]$w.Physical.metric + 35) + [Environment]::NewLine +
+                  '然後重新啟動 AEDT。要還原：-AutomaticMetric Enabled。' + [Environment]::NewLine +
+                  '這只改路由優先順序，不會停用 Hyper-V／WSL／VPN。') `
+            -FixAction 'fix-network-topology' -FixOn $w.Machine
+    }
+    if ($metricUnknown.Count -gt 0) {
+        Add-Finding -Level 'MANUAL' -Title (($metricUnknown -join '、') + ' 讀不到網路介面的優先權') `
+            -Detail ('有虛擬介面，但拿不到 Metric，無法判斷它是不是排在實體介面前面。' + [Environment]::NewLine +
+                     '舊版工具產生的節點報告沒有這個欄位。') `
+            -Fix '用新版重跑一次節點檢查。'
     }
     if ($multiNic.Count -gt 0) {
         Add-Finding -Level 'SUSPECT' -Title '有機器存在多張實體網卡' `
@@ -1779,7 +1862,7 @@ foreach ($a in $adapters) {
     $adapterJson += [pscustomobject]@{
         alias = (Protect-Text $a.Alias); description = (Protect-Text $a.Desc)
         ipv4 = (Protect-Text $a.IPv4); prefixLength = $a.PrefixLen
-        gateway = (Protect-Text $a.Gateway); isVirtual = $a.IsVirtual
+        gateway = (Protect-Text $a.Gateway); isVirtual = $a.IsVirtual; metric = $a.Metric
         network = $(if ($nk) { $nk.Key } else { $null })
         networkGuessed = $(if ($nk) { $nk.Guessed } else { $null })
     }

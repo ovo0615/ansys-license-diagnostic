@@ -28,6 +28,8 @@ function New-Node {
         [string] $OsBuild  = '26100',
         [int]    $RealNics = 1,
         [int]    $VirtualNics = 0,
+        [object] $RealMetric    = 25,
+        [object] $VirtualMetric = 40,
         [object[]] $Peers  = @(),
         [string] $CaseId   = 'TEST-001',
         [int]    $Schema   = 1,
@@ -42,14 +44,14 @@ function New-Node {
         $adapters += [pscustomobject]@{
             alias = ('Ethernet' + $i); description = 'Intel Ethernet'
             ipv4 = $Ip; prefixLength = 24; gateway = '192.168.10.1'
-            isVirtual = $false; network = $Network; networkGuessed = $false
+            isVirtual = $false; network = $Network; networkGuessed = $false; metric = $RealMetric
         }
     }
     for ($i = 0; $i -lt $VirtualNics; $i++) {
         $adapters += [pscustomobject]@{
             alias = ('vEthernet ' + $i); description = 'Hyper-V Virtual Ethernet Adapter'
             ipv4 = '172.20.5.1'; prefixLength = 20; gateway = $null
-            isVirtual = $true; network = '172.20.0.0/20'; networkGuessed = $false
+            isVirtual = $true; network = '172.20.0.0/20'; networkGuessed = $false; metric = $VirtualMetric
         }
     }
 
