@@ -387,6 +387,11 @@ Assert-True '會告訴使用者不必重開機'        ($wizardText -match '不�
 # 驗證失敗時要先教人分辨「本機就不行」與「跨機不行」——訊息本身會誤導。
 Assert-True '驗證失敗要先排除本機問題'      ($wizardText -match '本機單機也失敗的話')
 Assert-True '驗證失敗要點名保留埠這個原因'  ($wizardText -match 'errno = 10013')
+# 離開碼 3 是「連線全通，但有既有 Ansys 程序」。串機是成功的，只是求解前要清場。
+# 報成 ✗ 會害人回頭重查帳號與防火牆，但該做的只是請對端把 AEDT 關掉。
+Assert-True '離開碼 3 視為警告不是失敗'    ($wizardText -match "ExitCode -eq 3")
+Assert-True '離開碼 3 要說串機本身是通的'  ($wizardText -match '串機本身是通的')
+Assert-True '離開碼 3 要提醒不要直接砍別人的 AEDT' ($wizardText -match '不要直接砍')
 
 Write-Host ''
 Write-Host ('  通過 ' + $script:Passed + ' 項，失敗 ' + $script:Failed + ' 項。') -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })

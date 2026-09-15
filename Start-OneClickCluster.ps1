@@ -1076,6 +1076,24 @@ function Step-Verify {
     $result = Invoke-ChildScript -ScriptName 'Register-IntelMpiCredential.ps1' `
         -Arguments @('-Peer', (Quote-Argument $State.Peer), '-VerifyOnly') -TimeoutSeconds 300
     if ($result.ExitCode -eq 0) { return @{ Status = 'Pass'; Detail = 'MPI 帳密、RSM、Hydra、兩節點 hostname 全通' } }
+
+    # 離開碼 3 是「連線全通，但有既有 Ansys 程序」。串機本身是成功的，
+    # 只是求解前要清場。把它報成 ✗ 會害人以為還沒通，跑去重查帳號與防火牆——
+    # 但該做的其實只是請對端把 AEDT 關掉。
+    if ($result.ExitCode -eq 3) {
+        Write-Log ''
+        Write-Log '  ▶ 串機本身是通的：MPI 帳密、RSM、Hydra、兩節點 hostname 全部通過。'
+        Write-Log '    卡住的只有「求解前清場」——上面列出的機器還有 Ansys 程序在跑。'
+        Write-Log ''
+        Write-Log '    正式求解前要處理：'
+        Write-Log '      1. 請那台的使用者把 AEDT 存檔後關閉（那可能是別人正在用的視窗，不要直接砍）'
+        Write-Log '      2. 兩台都只留 Electromagnetics RSM 與 Intel Hydra 服務在背景'
+        Write-Log '      3. 然後只在主控這台開 AEDT'
+        Write-Log ''
+        Write-Log '    這一步之後的步驟仍會繼續——機器清單不受既有程序影響。'
+        return @{ Status = 'Warn'; Detail = '串機通過；但有既有 Ansys 程序，求解前要先清場' }
+    }
+
     Write-Log '  驗證沒過。先看上面那幾行實際的錯誤訊息，再照下面順序查：'
     Write-Log ''
     Write-Log '  ▶ 先確認這是不是「本機就跑不起來」，而不是跨機問題：'
