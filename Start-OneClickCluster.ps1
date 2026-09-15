@@ -273,6 +273,40 @@ function Get-AccountCompatibility {
     }
 }
 
+function Get-AedtTokenFromPath {
+    <#
+        從安裝路徑抓出版本代號（v261 之類）。抓不到回空字串。
+
+        兩種版面都要認得：
+          C:\Program Files\AnsysEM\v242\Win64            舊版面
+          C:\Program Files\ANSYS Inc\v261\AnsysEM\Win64  新版面（多一層 AnsysEM）
+        以及更舊的 AnsysEM19.2 這種寫法。
+    #>
+    param([string] $Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $text = $Path -replace '/', '\'
+    if ($text -notmatch '\\$') { $text = $text + '\' }
+    if ($text -match '(?i)\\v(\d{3})\\')            { return ('v' + $Matches[1]) }
+    if ($text -match '(?i)\\AnsysEM(\d{2})\.(\d)\\') { return ('v' + $Matches[1] + $Matches[2]) }
+    return ''
+}
+
+function Get-AedtVersionRank {
+    <# 把 v261 變成可以比大小的 261。認不出來回 0，排序時自然沉到最後。 #>
+    param([string] $Token)
+    if ($Token -match '(?i)^v(\d{3})$') { return [int]$Matches[1] }
+    return 0
+}
+
+function Get-AedtReleaseLabel {
+    <# v261 -> 2026 R1。認不出來就把原字串還回去，不要瞎猜。 #>
+    param([string] $Token)
+    if ($Token -match '(?i)^v(\d{2})(\d)$') {
+        return ('20' + $Matches[1] + ' R' + $Matches[2])
+    }
+    return $Token
+}
+
 function Get-PeerShareProbe {
     <#
         回傳「要探測哪個共用根」以及「探到之後交換資料夾在哪」。
@@ -371,6 +405,77 @@ function Resolve-OverallOutcome {
     return 'Pending'
 }
 
+function Get-AedtInstallInfo {
+    <#
+        列出這台裝了哪些 AEDT，**新版在前**。
+
+        原本三個地方都寫錯，合起來就是「明明裝了 v261 卻報 v251」：
+          1. 環境變數名稱寫死成 251/252/261/262，漏掉其他版本，新版出來也會漏。
+          2. 取找到的「第一個」而不是最新的，所以誰排前面誰贏。
+          3. C:\Program Files\ANSYS Inc 底下是 v261\AnsysEM\Win64\ansysedt.exe，
+             程式卻只找 v261\Win64\ansysedt.exe，這條線索等於沒作用。
+
+        版本挑錯在串機上是真的會出事：兩台必須用同一版，
+        而且修復那步要把 ANSYS_EM_EXEC_DIR 指到對的安裝目錄。
+    #>
+    $roots = New-Object System.Collections.Generic.List[string]
+
+    # 環境變數：動態列出所有 ANSYSEM_ROOT*，不要寫死版本號
+    foreach ($scope in @('Machine', 'Process')) {
+        try {
+            $vars = [Environment]::GetEnvironmentVariables($scope)
+            foreach ($key in $vars.Keys) {
+                if ($key -match '(?i)^ANSYSEM_ROOT\d+$' -or $key -match '(?i)^ANSYS_EM_EXEC_DIR$') {
+                    $value = [string]$vars[$key]
+                    if ($value -and (Test-Path -LiteralPath $value)) { $roots.Add($value.TrimEnd('\')) }
+                }
+            }
+        } catch { }
+    }
+
+    # 檔案系統：兩種版面都要找
+    foreach ($base in @('C:\Program Files\AnsysEM', 'C:\Program Files\ANSYS Inc',
+                        'C:\Program Files\ANSYS Inc\AnsysEM')) {
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            foreach ($tail in @('Win64\ansysedt.exe', 'AnsysEM\Win64\ansysedt.exe')) {
+                $candidate = Join-Path $_.FullName $tail
+                if (Test-Path -LiteralPath $candidate) {
+                    $roots.Add((Split-Path -Parent $candidate))
+                }
+            }
+        }
+    }
+
+    $seen  = New-Object System.Collections.Generic.HashSet[string]
+    $items = @()
+    foreach ($root in $roots) {
+        if (-not $seen.Add($root.ToLowerInvariant())) { continue }
+        $exe = Join-Path $root 'ansysedt.exe'
+        if (-not (Test-Path -LiteralPath $exe)) { continue }
+        $token = Get-AedtTokenFromPath $root
+        $fileVersion = ''
+        try { $fileVersion = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion } catch { $fileVersion = '' }
+        $items += [pscustomobject]@{
+            Root    = $root
+            Token   = $token
+            Rank    = (Get-AedtVersionRank $token)
+            Release = (Get-AedtReleaseLabel $token)
+            Version = $fileVersion
+            Display = $(if ($token) { $token + '（' + (Get-AedtReleaseLabel $token) + '）' } else { $root })
+        }
+    }
+    $sorted = @($items | Sort-Object -Property Rank -Descending)
+
+    return [pscustomobject]@{
+        Found   = ($sorted.Count -gt 0)
+        Root    = $(if ($sorted.Count -gt 0) { $sorted[0].Root } else { '' })
+        Token   = $(if ($sorted.Count -gt 0) { $sorted[0].Token } else { '' })
+        Version = $(if ($sorted.Count -gt 0) { $sorted[0].Version } else { '' })
+        All     = $sorted
+    }
+}
+
 if ($LibraryOnly) { return }
 
 # ============================================================================
@@ -398,39 +503,6 @@ function Test-IsAdministrator {
         $principal = New-Object Security.Principal.WindowsPrincipal($identity)
         return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     } catch { return $false }
-}
-
-function Get-AedtInstallInfo {
-    <# 三條線索：環境變數、登錄檔、檔案系統。任一條找到就算。 #>
-    $roots = New-Object System.Collections.Generic.List[string]
-    foreach ($name in @('ANSYSEM_ROOT251', 'ANSYSEM_ROOT252', 'ANSYSEM_ROOT261', 'ANSYSEM_ROOT262', 'ANSYS_EM_EXEC_DIR')) {
-        $value = [Environment]::GetEnvironmentVariable($name, 'Machine')
-        if ($value -and (Test-Path -LiteralPath $value)) { $roots.Add($value) }
-    }
-    foreach ($base in @('C:\Program Files\AnsysEM', 'C:\Program Files\ANSYS Inc')) {
-        if (Test-Path -LiteralPath $base) {
-            Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                $candidate = Join-Path $_.FullName 'Win64\ansysedt.exe'
-                if (Test-Path -LiteralPath $candidate) { $roots.Add((Split-Path -Parent $candidate)) }
-            }
-        }
-    }
-    $unique = @($roots | Select-Object -Unique)
-    $version = ''
-    if ($unique.Count -gt 0) {
-        try {
-            $exe = Join-Path $unique[0] 'ansysedt.exe'
-            if (Test-Path -LiteralPath $exe) {
-                $version = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
-            }
-        } catch { $version = '' }
-    }
-    return [pscustomobject]@{
-        Found   = ($unique.Count -gt 0)
-        Root    = $(if ($unique.Count -gt 0) { $unique[0] } else { '' })
-        All     = $unique
-        Version = $version
-    }
 }
 
 function Write-Log {
@@ -526,14 +598,32 @@ function Step-Preflight {
     $State.AccountKind = Get-LocalAccountKind
     $State.IsAdmin     = Test-IsAdministrator
     $aedt = Get-AedtInstallInfo
-    $State.AedtRoot    = $aedt.Root
-    $State.AedtVersion = $aedt.Version
+    # 使用者在選單裡挑過就用他挑的；沒挑到才退回最新版。
+    $chosenRoot = [string]$State.AedtRoot
+    if ($chosenRoot) {
+        $match = @($aedt.All | Where-Object { $_.Root -eq $chosenRoot }) | Select-Object -First 1
+        if ($match) {
+            $State.AedtVersion = $match.Version
+            $State.AedtToken   = $match.Token
+        }
+    } else {
+        $State.AedtRoot    = $aedt.Root
+        $State.AedtVersion = $aedt.Version
+        $State.AedtToken   = $aedt.Token
+    }
 
     Write-Log ('  本機名稱：' + $State.LocalName)
     Write-Log ('  登入帳號：' + $State.UserName + '（' + (Get-AccountKindLabel $State.AccountKind) + '）')
     Write-Log ('  系統管理員：' + $(if ($State.IsAdmin) { '是' } else { '否（步驟 6 會另外要求提權）' }))
     if ($aedt.Found) {
-        Write-Log ('  AEDT：' + $aedt.Root + $(if ($aedt.Version) { '（' + $aedt.Version + '）' } else { '' }))
+        Write-Log ('  AEDT（本次使用）：' + $State.AedtToken + '  ' + $State.AedtRoot +
+                   $(if ($State.AedtVersion) { '（' + $State.AedtVersion + '）' } else { '' }))
+        if ($aedt.All.Count -gt 1) {
+            Write-Log ('  這台另外還有：' +
+                       (@($aedt.All | Where-Object { $_.Root -ne $State.AedtRoot } |
+                          ForEach-Object { $_.Token }) -join '、'))
+            Write-Log '  兩台必須選同一版，版本不同 MPI 會起不來。'
+        }
     } else {
         Write-Log '  AEDT：找不到安裝。這台不能當求解節點。'
     }
@@ -737,6 +827,9 @@ function Step-Repair {
                ' -ReportDirectory ' + (Quote-Argument $reportPath) +
                ' -Peer ' + (Quote-Argument $State.Peer) +
                ' -ConfigureNetworkPorts'
+    # 這台裝了不只一版時，修復必須知道要把 ANSYS_EM_EXEC_DIR 指到哪一個，
+    # 否則它自己挑的可能不是你要跑的那一版。
+    if ($State.AedtRoot) { $argLine += ' -AedtRoot ' + (Quote-Argument $State.AedtRoot) }
     Write-Log '  即將跳出 UAC，請按「是」。修復內容：'
     Write-Log '    統一 tempdirectory 為 C:\AnsysWork\AedtTemp（自動備份 default.cfg）'
     Write-Log '    設定 RSM MPI 需要的 ANSYS_EM_EXEC_DIR'
@@ -870,7 +963,7 @@ $header.Controls.Add($pairLabel)
 
 $inputPanel = New-Object Windows.Forms.Panel
 $inputPanel.Location = New-Object Drawing.Point(18, 100)
-$inputPanel.Size = New-Object Drawing.Size(964, 118)
+$inputPanel.Size = New-Object Drawing.Size(964, 162)
 $inputPanel.Anchor = 'Top, Left, Right'
 $inputPanel.BackColor = [Drawing.Color]::White
 $form.Controls.Add($inputPanel)
@@ -920,8 +1013,40 @@ $secondaryRadio.Location = New-Object Drawing.Point(560, 62)
 $secondaryRadio.Size = New-Object Drawing.Size(300, 30)
 $inputPanel.Controls.Add($secondaryRadio)
 
+$aedtLabel = New-Object Windows.Forms.Label
+$aedtLabel.Text = '要用哪一版 AEDT'
+$aedtLabel.Location = New-Object Drawing.Point(20, 110)
+$aedtLabel.Size = New-Object Drawing.Size(200, 28)
+$inputPanel.Controls.Add($aedtLabel)
+
+$aedtBox = New-Object Windows.Forms.ComboBox
+$aedtBox.DropDownStyle = 'DropDownList'
+$aedtBox.Location = New-Object Drawing.Point(224, 106)
+$aedtBox.Size = New-Object Drawing.Size(472, 30)
+$inputPanel.Controls.Add($aedtBox)
+
+$aedtHint = New-Object Windows.Forms.Label
+$aedtHint.Text = '預設最新版。兩台必須選同一版。'
+$aedtHint.Location = New-Object Drawing.Point(706, 110)
+$aedtHint.Size = New-Object Drawing.Size(240, 40)
+$aedtHint.ForeColor = [Drawing.Color]::FromArgb(110, 110, 110)
+$aedtHint.Anchor = 'Top, Left, Right'
+$inputPanel.Controls.Add($aedtHint)
+
+# 開視窗時就把裝了哪些列出來，不必等按下開始才知道挑到哪一版
+$script:AedtInstalls = @()
+try { $script:AedtInstalls = @((Get-AedtInstallInfo).All) } catch { $script:AedtInstalls = @() }
+if ($script:AedtInstalls.Count -gt 0) {
+    foreach ($install in $script:AedtInstalls) { [void]$aedtBox.Items.Add($install.Display) }
+    $aedtBox.SelectedIndex = 0
+} else {
+    [void]$aedtBox.Items.Add('找不到 AEDT 安裝')
+    $aedtBox.SelectedIndex = 0
+    $aedtBox.Enabled = $false
+}
+
 $stepList = New-Object Windows.Forms.ListView
-$stepList.Location = New-Object Drawing.Point(18, 228)
+$stepList.Location = New-Object Drawing.Point(18, 272)
 $stepList.Size = New-Object Drawing.Size(964, 232)
 $stepList.Anchor = 'Top, Left, Right'
 $stepList.View = 'Details'
@@ -955,7 +1080,7 @@ foreach ($definition in $stepDefinitions) {
 
 $startButton = New-Object Windows.Forms.Button
 $startButton.Text = '開始'
-$startButton.Location = New-Object Drawing.Point(18, 470)
+$startButton.Location = New-Object Drawing.Point(18, 514)
 $startButton.Size = New-Object Drawing.Size(220, 54)
 $startButton.BackColor = [Drawing.Color]::FromArgb(0, 103, 184)
 $startButton.ForeColor = [Drawing.Color]::White
@@ -965,13 +1090,13 @@ $form.Controls.Add($startButton)
 
 $openOutputButton = New-Object Windows.Forms.Button
 $openOutputButton.Text = '開啟報告資料夾'
-$openOutputButton.Location = New-Object Drawing.Point(250, 478)
+$openOutputButton.Location = New-Object Drawing.Point(250, 522)
 $openOutputButton.Size = New-Object Drawing.Size(170, 40)
 $openOutputButton.Enabled = $false
 $form.Controls.Add($openOutputButton)
 
 $statusLabel = New-Object Windows.Forms.Label
-$statusLabel.Location = New-Object Drawing.Point(436, 480)
+$statusLabel.Location = New-Object Drawing.Point(436, 524)
 $statusLabel.Size = New-Object Drawing.Size(546, 44)
 $statusLabel.Anchor = 'Top, Left, Right'
 $statusLabel.ForeColor = [Drawing.Color]::FromArgb(38, 89, 130)
@@ -979,8 +1104,8 @@ $statusLabel.Text = '填入另一台的電腦名稱後按「開始」。'
 $form.Controls.Add($statusLabel)
 
 $logBox = New-Object Windows.Forms.TextBox
-$logBox.Location = New-Object Drawing.Point(18, 534)
-$logBox.Size = New-Object Drawing.Size(964, 208)
+$logBox.Location = New-Object Drawing.Point(18, 578)
+$logBox.Size = New-Object Drawing.Size(964, 164)
 $logBox.Anchor = 'Top, Bottom, Left, Right'
 $logBox.Multiline = $true
 $logBox.ScrollBars = 'Vertical'
@@ -1041,6 +1166,14 @@ $startButton.Add_Click({
         MergeDir       = (Join-Path $base 'merge')
         OutDir         = (Join-Path $base 'out')
         ProjectPath    = ''
+        AedtRoot       = ''
+        AedtToken      = ''
+    }
+    if ($script:AedtInstalls.Count -gt 0 -and $aedtBox.SelectedIndex -ge 0 -and
+        $aedtBox.SelectedIndex -lt $script:AedtInstalls.Count) {
+        $chosen = $script:AedtInstalls[$aedtBox.SelectedIndex]
+        $script:State.AedtRoot  = $chosen.Root
+        $script:State.AedtToken = $chosen.Token
     }
     Write-Log ($TOOL_NAME + '  v' + $TOOL_VERSION + '   ' + $VENDOR_NAME)
     Write-Log ('案件編號（兩台會算出同一個）：' + $caseId)

@@ -86,6 +86,39 @@ Assert-Equal '名單只有一台時不猜'        '' (Resolve-PeerFromPair -Pair
 Assert-Equal '名單是空的時候不猜'        '' (Resolve-PeerFromPair -PairHosts @() -LocalName 'NODEA')
 Assert-Equal '名單兩個都是自己時不猜'    '' (Resolve-PeerFromPair -PairHosts @('NODEA', 'NODEA') -LocalName 'NODEA')
 
+# ---- AEDT 版本辨識與排序 ----------------------------------------------------
+# 實機上原本會「明明裝了 v261 卻報 v251」，三個錯疊在一起：
+# 環境變數名稱寫死、取第一個而不是最新的、以及 ANSYS Inc 版面多一層 AnsysEM 沒認到。
+# 版本挑錯在串機上是真的會出事：兩台必須同版，修復那步還要把
+# ANSYS_EM_EXEC_DIR 指到對的安裝目錄。
+Write-Host ''
+Write-Host '  Get-AedtTokenFromPath / Get-AedtVersionRank / Get-AedtReleaseLabel' -ForegroundColor Cyan
+Assert-Equal '舊版面 AnsysEM\v242\Win64'      'v242' (Get-AedtTokenFromPath 'C:\Program Files\AnsysEM\v242\Win64')
+Assert-Equal '新版面 ANSYS Inc\v261\AnsysEM'  'v261' (Get-AedtTokenFromPath 'C:\Program Files\ANSYS Inc\v261\AnsysEM')
+Assert-Equal '新版面再多一層 Win64'             'v261' (Get-AedtTokenFromPath 'C:\Program Files\ANSYS Inc\v261\AnsysEM\Win64')
+Assert-Equal '結尾有反斜線也要認得'             'v251' (Get-AedtTokenFromPath 'C:\Program Files\ANSYS Inc\v251\AnsysEM\')
+Assert-Equal '更舊的 AnsysEM19.2 寫法'          'v192' (Get-AedtTokenFromPath 'C:\Program Files\AnsysEM19.2\Win64')
+Assert-Equal '認不出來回空字串'                 ''     (Get-AedtTokenFromPath 'C:\Program Files\Something\Win64')
+Assert-Equal '空路徑回空字串'                   ''     (Get-AedtTokenFromPath '')
+
+Assert-Equal 'v261 排序值'  261 (Get-AedtVersionRank 'v261')
+Assert-Equal 'v242 排序值'  242 (Get-AedtVersionRank 'v242')
+Assert-Equal '認不出來排序值為 0'  0 (Get-AedtVersionRank 'nonsense')
+Assert-True  'v261 比 v252 新'  ((Get-AedtVersionRank 'v261') -gt (Get-AedtVersionRank 'v252'))
+Assert-True  'v252 比 v251 新'  ((Get-AedtVersionRank 'v252') -gt (Get-AedtVersionRank 'v251'))
+Assert-True  'v251 比 v242 新'  ((Get-AedtVersionRank 'v251') -gt (Get-AedtVersionRank 'v242'))
+
+Assert-Equal 'v261 的發行名稱' '2026 R1' (Get-AedtReleaseLabel 'v261')
+Assert-Equal 'v242 的發行名稱' '2024 R2' (Get-AedtReleaseLabel 'v242')
+Assert-Equal '認不出來就原樣回傳' 'weird' (Get-AedtReleaseLabel 'weird')
+
+# 排序整串，確認最新的真的排第一
+$ranked = @('v242', 'v261', 'v251', 'v252') |
+    ForEach-Object { [pscustomobject]@{ Token = $_; Rank = (Get-AedtVersionRank $_) } } |
+    Sort-Object -Property Rank -Descending
+Assert-Equal '排序後第一個是最新版' 'v261' $ranked[0].Token
+Assert-Equal '排序後最後一個是最舊版' 'v242' $ranked[3].Token
+
 # ---- 帳號型態判定 -----------------------------------------------------------
 Write-Host ''
 Write-Host '  Get-LocalAccountKind' -ForegroundColor Cyan
@@ -265,6 +298,13 @@ Assert-True '精靈不接收密碼'               ($wizardText -notmatch '(?i)\$
 Assert-True '共用不通時要分辨網域與工作群組' ($wizardText -match '不是本機系統管理員')
 Assert-True '網域情況要說可以直接往下做'     ($wizardText -match '可以直接往下做')
 Assert-True '步驟 2 不再用 Split-Path 湊共用根' ($wizardText -notmatch 'Split-Path -Parent \(Split-Path')
+# 一台裝了不只一版時，修復必須知道 ANSYS_EM_EXEC_DIR 要指哪一個，
+# 否則它自己挑的可能不是你要跑的那一版。
+Assert-True '有讓使用者挑 AEDT 版本'        ($wizardText -match '要用哪一版 AEDT')
+Assert-True '版本選單預設最新版'            ($wizardText -match 'Sort-Object -Property Rank -Descending')
+Assert-True '修復會收到選定的安裝目錄'      ($wizardText -match "-AedtRoot ' \+ \(Quote-Argument")
+Assert-True '環境變數不再寫死版本號'        ($wizardText -notmatch 'ANSYSEM_ROOT251')
+Assert-True '兩種安裝版面都要找'            ($wizardText -match 'AnsysEM.Win64.ansysedt\.exe')
 
 Write-Host ''
 Write-Host ('  通過 ' + $script:Passed + ' 項，失敗 ' + $script:Failed + ' 項。') -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
