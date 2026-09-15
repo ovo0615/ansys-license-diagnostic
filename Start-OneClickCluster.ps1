@@ -120,6 +120,55 @@ function Resolve-PeerFromPair {
     return $others[0]
 }
 
+function Get-NodeOwnerFromFileName {
+    <#
+        從節點報告的檔名認出它是哪一台產生的。
+        檔名長這樣：AedtCluster_<案件編號>_<電腦名>_<時間戳>.node.json
+
+        用檔名而不是開檔讀 JSON，是為了讓這段可以純邏輯測試；
+        呼叫端若讀得到 JSON 會以 JSON 裡的 computerName 為準。
+    #>
+    param([string] $FileName, [string] $CaseId = '')
+    if ([string]::IsNullOrWhiteSpace($FileName)) { return '' }
+    $base = $FileName -replace '(?i)\.node\.json$', ''
+    if ($CaseId) {
+        $prefix = 'AedtCluster_' + $CaseId + '_'
+        if ($base.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $rest = $base.Substring($prefix.Length)
+            return ($rest -replace '_\d{8}-\d{4,6}$', '')
+        }
+    }
+    $parts = @($base -split '_')
+    if ($parts.Count -ge 2) { return $parts[$parts.Count - 2] }
+    return ''
+}
+
+function Get-NodeCoverage {
+    <#
+        判斷「兩台的報告都到齊了沒」。
+
+        刻意算「有幾台」而不是「有幾個檔案」：每按一次「開始」就會多存一份
+        自己的報告，檔案數很快就超過 2，但那全是同一台的。
+        用檔案數放行的話，彙整會拿到一堆同一台的資料然後失敗，
+        而畫面上寫的是「3 份節點報告已就位」——看起來完全正常。
+    #>
+    param(
+        [string[]] $Owners,
+        [Parameter(Mandatory = $true)][string] $LocalName,
+        [Parameter(Mandatory = $true)][string] $PeerName
+    )
+    $seen = @($Owners | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
+    $missing = @()
+    foreach ($want in @($LocalName, $PeerName)) {
+        if ($seen -notcontains $want.ToLowerInvariant()) { $missing += $want }
+    }
+    return [pscustomobject]@{
+        Machines = $seen.Count
+        Missing  = $missing
+        Complete = ($missing.Count -eq 0)
+    }
+}
+
 function Get-LocalAccountKind {
     <#
         判斷目前登入帳號是本機帳號、Microsoft 帳戶、Azure AD 還是網域帳號。
@@ -732,6 +781,13 @@ function Step-Exchange {
     # 本機的先放進本機收件匣，對端才拉得到
     $localInbox = Get-LocalExchangePath -CaseId $State.CaseId
     if (-not (Test-Path -LiteralPath $localInbox)) { New-Item -ItemType Directory -Path $localInbox -Force | Out-Null }
+    # 每按一次「開始」就會產生一份新的、帶新時間戳的報告。不先清掉舊的，
+    # 同一台的報告會愈堆愈多，而彙整只想要「每台一份」。
+    foreach ($dir in @($localInbox, $mergeDir)) {
+        Get-ChildItem -LiteralPath $dir -Filter '*.node.json' -File -ErrorAction SilentlyContinue |
+            Where-Object { (Get-NodeOwnerFromFileName $_.Name $State.CaseId) -eq $State.LocalName } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
     Copy-Item -LiteralPath $State.LocalNodeFile -Destination $localInbox -Force
     Copy-Item -LiteralPath $State.LocalNodeFile -Destination $mergeDir -Force
 
@@ -809,18 +865,31 @@ function Step-Exchange {
         Write-Log ('  讀取本機收件匣失敗：' + $_.Exception.Message)
     }
 
-    $count = @(Get-ChildItem -LiteralPath $mergeDir -Filter '*.node.json' -File -ErrorAction SilentlyContinue).Count
-    Write-Log ('  目前彙整資料夾內有 ' + $count + ' 份節點報告。')
-    if ($count -lt 2) {
+    $files  = @(Get-ChildItem -LiteralPath $mergeDir -Filter '*.node.json' -File -ErrorAction SilentlyContinue)
+    $owners = @($files | ForEach-Object { Get-NodeOwnerFromFileName $_.Name $State.CaseId })
+    $coverage = Get-NodeCoverage -Owners $owners -LocalName $State.LocalName -PeerName $State.Peer
+    Write-Log ('  彙整資料夾內有 ' + $files.Count + ' 個檔案，來自 ' + $coverage.Machines + ' 台：' +
+               ((@($owners | Select-Object -Unique) -join '、')))
+
+    if (-not $coverage.Complete) {
+        Write-Log ('  還缺這幾台的報告：' + ($coverage.Missing -join '、'))
+        # 只拿到身分卡片卻沒拿到節點報告，是複製時漏檔的典型症狀。
+        # 不講出來的話，畫面只會說「還缺對端」，人會以為對端根本沒跑。
+        $peerIdentityOnly = @(Get-ChildItem -LiteralPath $localInbox -Filter '*.identity.json' -File -ErrorAction SilentlyContinue |
+                              Where-Object { $_.BaseName -notlike ($State.LocalName + '*') })
+        if ($peerIdentityOnly.Count -gt 0 -and ($coverage.Missing -contains $State.Peer)) {
+            Write-Log ('  註：收到了 ' + $State.Peer + ' 的身分卡片（' + $peerIdentityOnly[0].Name + '），但沒有它的 .node.json。')
+            Write-Log '      複製的時候把「整個資料夾的內容」都帶過來，不要只挑一個檔案。'
+        }
         Write-Log ''
         Write-Log '  ▶ 下一步：到另一台開同一支工具、填本機名稱當對端，按一次「開始」。'
         Write-Log '    然後回到這台再按一次「開始」，會自動接下去。'
         if (-not $State.ShareAvailable) {
             Write-Log ('    USB 模式記得把對端的 .node.json 複製到：' + $localInbox)
         }
-        return @{ Status = 'Wait'; Detail = '等待對端執行（目前只有 1 份）' }
+        return @{ Status = 'Wait'; Detail = ('還缺 ' + ($coverage.Missing -join '、') + ' 的報告') }
     }
-    return @{ Status = 'Pass'; Detail = ($count.ToString() + ' 份節點報告已就位') }
+    return @{ Status = 'Pass'; Detail = ('兩台的報告都到齊：' + (@($owners | Select-Object -Unique) -join '、')) }
 }
 
 function Step-Merge {

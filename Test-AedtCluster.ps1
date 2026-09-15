@@ -856,6 +856,37 @@ function Invoke-MergeMode {
             Add-Finding -Level 'OK' -Title ('每台都有的版本：' + ((@($common)) -join '、')) `
                 -Detail '串機請指定其中一個版本。'
             $script:Facts['共通版本'] = ((@($common)) -join '、')
+
+            # 同一個 release 底下還有修補版號（2026.1.0 與 2026.1.4 都是 2026 R1）。
+            # 只比到 release 會說「版本一致」然後放行，但那是不同的執行檔。
+            # Ansys 要求各節點裝同一版；修補版不同會不會出事要看情況，
+            # 所以這裡列【可疑】而不是【確定】——講死了就是超出證據。
+            foreach ($rel in @($common)) {
+                $pairs = @()
+                foreach ($n in $withAedt) {
+                    $hit = @($n.node.aedt | Where-Object { $_.release -eq $rel } |
+                             Where-Object { $_.fileVersion }) | Select-Object -First 1
+                    if ($hit) {
+                        $pairs += [pscustomobject]@{
+                            Machine = $n.node.computerName
+                            File    = [string]$hit.fileVersion
+                        }
+                    }
+                }
+                $distinct = @($pairs | ForEach-Object { $_.File } | Select-Object -Unique)
+                if ($pairs.Count -ge 2 -and $distinct.Count -gt 1) {
+                    $detail = ($rel + ' 在各機器上的實際版本：') + [Environment]::NewLine
+                    foreach ($pair in $pairs) {
+                        $detail += '  ' + $pair.Machine + ' : ' + $pair.File + [Environment]::NewLine
+                    }
+                    $detail += '這些都算 ' + $rel + '，但執行檔不是同一版。'
+                    Add-Finding -Level 'SUSPECT' -Title ($rel + ' 的修補版號各機不同') `
+                        -Detail $detail `
+                        -Fix ('把參與串機的機器統一到同一個修補版（通常是都更新到最新的 ' +
+                              (@($distinct | Sort-Object -Descending)[0]) + '）。') `
+                        -FixAction 'align-aedt-version' -FixOn 'all'
+                }
+            }
         }
 
         # 1b. 作業系統產品不同是明確不相容；相同產品但更新層級不同先列為疑點。

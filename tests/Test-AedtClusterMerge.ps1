@@ -347,6 +347,31 @@ Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑
 Assert-Finding -Case '案例14' -Findings $f -TitleLike 'temp 目錄各機路徑不同' -DetailLike '長短檔名' -Absent
 
 # ---------------------------------------------------------------------------
+# 實機遇到的：兩台都是 2026 R1，但一台 2026.1.0、一台 2026.1.4。
+# 只比到 release 會說「每台都有的版本：2026 R1」然後放行——
+# 但那是不同的執行檔，而 Ansys 要求各節點同版。
+# 列【可疑】不列【確定】：修補版不同會不會真的出事要看情況，講死就超出證據。
+Write-Host ''
+Write-Host '案例 17：同一個 release 但修補版號不同，要列疑點' -ForegroundColor White
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -Release '2026 R1' -FileVersion '2026.1.0')
+    (New-Node -Name 'WS02' -Release '2026 R1' -FileVersion '2026.1.4')
+)
+Assert-Finding -Case '案例17' -Findings $f -TitleLike '2026 R1 的修補版號各機不同' `
+    -Level 'SUSPECT' -FixAction 'align-aedt-version'
+Assert-Finding -Case '案例17' -Findings $f -TitleLike '2026 R1 的修補版號各機不同' -DetailLike '2026.1.4'
+# 共通版本還是要照講，不能因為修補版不同就說沒有共通版本
+Assert-Finding -Case '案例17' -Findings $f -TitleLike '每台都有的版本' -Level 'OK'
+Assert-Finding -Case '案例17' -Findings $f -TitleLike '沒有任何一個 AEDT 版本是每台機器都有的' -Absent
+
+# 修補版號一樣時要閉嘴——不該講的講了就變雜訊。
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -Release '2026 R1' -FileVersion '2026.1.4')
+    (New-Node -Name 'WS02' -Release '2026 R1' -FileVersion '2026.1.4')
+)
+Assert-Finding -Case '案例17' -Findings $f -TitleLike '修補版號各機不同' -Absent
+
+# ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 Write-Host ('  通過 ' + $script:Pass + '，失敗 ' + $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })

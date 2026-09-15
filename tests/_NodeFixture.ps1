@@ -14,6 +14,7 @@ function New-Node {
         [string] $Name,
         [string] $Release  = '2024 R2',
         [string] $Root     = 'C:\Program Files\AnsysEM\v242\Win64',
+        [string] $FileVersion = '24.2',
         [string] $TempDir  = 'C:\Temp',
         [bool]   $RsmRunning = $true,
         [string] $Mpi      = 'IntelMPI',
@@ -53,7 +54,7 @@ function New-Node {
     $aedt = @()
     if (-not $NoAedt) {
         $aedt += [pscustomobject]@{
-            root = $Root; token = 'v242'; release = $Release; fileVersion = '24.2'
+            root = $Root; token = 'v242'; release = $Release; fileVersion = $FileVersion
             sources = @('env'); cfgFound = $true
             tempDir = $(if ($NoTempDir) { $null } else { $TempDir })
             tempKind = 'local'; tempExists = $true; tempFreeGB = 400
