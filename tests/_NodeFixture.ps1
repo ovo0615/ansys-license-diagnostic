@@ -36,7 +36,12 @@ function New-Node {
         [bool]   $NoAedt   = $false,
         [bool]   $NoTempDir= $false,
         [string] $ExecDir  = 'C:\Program Files\ANSYS Inc\v261\AnsysEM',
-        [bool]   $NoClusterEnv = $false
+        [bool]   $NoClusterEnv = $false,
+        [bool]   $NoMpiCredential = $false,
+        [bool]   $NoMpiCredentialBlock = $false,
+        [string] $MpiAccount = 'TADC\ansys',
+        [string] $AedtMpiexec = 'C:\Program Files\ANSYS Inc\v261\AnsysEM\common\fluent_mpi\multiport\mpi\win64\intel21\bin\mpiexec.exe',
+        [string] $PathMpiexec = ''
     )
 
     $adapters = @()
@@ -105,6 +110,17 @@ function New-Node {
                 services = @(); portListening = $RsmRunning; port = 32958
             }
             mpi  = [pscustomobject]@{ detected = $mpiDetected; binaries = @() }
+            mpiCredential = $(if ($NoMpiCredentialBlock) { $null } else {
+                $pathMpi = $PathMpiexec
+                if (-not $pathMpi) { $pathMpi = $AedtMpiexec }
+                [pscustomobject]@{
+                    registered  = (-not $NoMpiCredential)
+                    account     = $(if ($NoMpiCredential) { '' } else { $MpiAccount })
+                    aedtMpiexec = $AedtMpiexec
+                    pathMpiexec = $pathMpi
+                    sameAsPath  = ($pathMpi -eq $AedtMpiexec)
+                }
+            })
             adapters = $adapters
             selfResolve = @($Ip)
             firewall = [pscustomobject]@{

@@ -1222,6 +1222,83 @@ function Invoke-MergeMode {
         }
     }
 
+    # 5b. Intel MPI 帳密：每一台都要各自註冊
+    #
+    # 這一項是 2026-09-15 現場踩到的。兩台版本、防火牆、埠、RSM、hydra 服務全部正確，
+    # 從 A 打到 B 的 mpiexec 測試也過了，求解還是卡住——因為求解時 mpiexec 是跑在 B，
+    # 而 B 沒有註冊帳密。只驗證單向會給出假的通過。
+    Write-Step '比對 Intel MPI 帳密註冊狀態'
+    $credMissing = @()
+    $credUnknown = @()
+    $credAccounts = @{}
+    foreach ($n in $nodes) {
+        $c = $n.node.mpiCredential
+        if ($null -eq $c) { $credUnknown += $n.node.computerName; continue }
+        if (-not $c.registered) {
+            $credMissing += $n.node.computerName
+        } elseif ($c.account) {
+            $a = [string]$c.account
+            if (-not $credAccounts.ContainsKey($a)) { $credAccounts[$a] = @() }
+            $credAccounts[$a] += $n.node.computerName
+        }
+    }
+    foreach ($m in $credMissing) {
+        $regCmd = 'mpiexec.exe'
+        foreach ($n in $nodes) {
+            if ($n.node.computerName -ne $m) { continue }
+            if ($n.node.mpiCredential -and $n.node.mpiCredential.aedtMpiexec) {
+                $regCmd = '"' + [string]$n.node.mpiCredential.aedtMpiexec + '"'
+            }
+        }
+        Add-Finding -Level 'CONFIRMED' -Title ($m + ' 沒有註冊 Intel MPI 帳密') `
+            -Detail ('分散求解時 mpiexec 會跑在被指派工作的那一台，不一定是你按下 Analyze 的那台。' + [Environment]::NewLine +
+                     '帳密存在執行者自己的 HKCU\Software\Intel\MPI，少任何一台，' + [Environment]::NewLine +
+                     '求解就會卡在「Determining memory availability on distributed machines」' + [Environment]::NewLine +
+                     '完全不動，而且不跳錯誤。') `
+            -Fix ('以實際跑求解的帳號登入 ' + $m + '（要互動登入，遠端觸發寫不進去），執行：' + [Environment]::NewLine +
+                  '  ' + $regCmd + ' -register' + [Environment]::NewLine + [Environment]::NewLine +
+                  '驗證，兩行都要 SUCCESS：' + [Environment]::NewLine +
+                  '  ' + $regCmd + ' -validate         <- 要印出 ' + $m + [Environment]::NewLine +
+                  '  ' + $regCmd + ' -validate -host <對端>') `
+            -FixAction 'register-mpi-credential' -FixOn $m
+    }
+    if ($credUnknown.Count -gt 0) {
+        Add-Finding -Level 'MANUAL' -Title 'MPI 帳密狀態不明' `
+            -Detail ('這些節點的報告沒有帳密欄位（工具版本較舊）：' + ($credUnknown -join '、')) `
+            -Fix '用同一版工具重新在每台收一次報告。'
+    }
+    if ($credMissing.Count -eq 0 -and $credUnknown.Count -eq 0 -and $credAccounts.Keys.Count -gt 0) {
+        Add-Finding -Level 'OK' -Title '每台都已註冊 Intel MPI 帳密'
+    }
+    if ($credAccounts.Keys.Count -gt 1) {
+        $detail = ''
+        foreach ($k in $credAccounts.Keys) {
+            $detail += '  ' + $k + '  <- ' + (($credAccounts[$k]) -join '、') + [Environment]::NewLine
+        }
+        Add-Finding -Level 'SUSPECT' -Title '各機註冊的 MPI 帳號不一致' `
+            -Detail ($detail + '各機註冊的應該是同一個要跑求解的帳號。') `
+            -Fix '在帳號不對的機器上以正確帳號重新 -register。' `
+            -FixAction 'register-mpi-credential' -FixOn 'all'
+    }
+
+    # AEDT 求解用的 mpiexec 與 PATH 上的不是同一支時要講清楚，
+    # 否則下一個人又會拿 PATH 上那支去驗證，得到假的通過。
+    $mismatched = @($nodes | Where-Object {
+        $_.node.mpiCredential -and $_.node.mpiCredential.aedtMpiexec -and
+        $_.node.mpiCredential.pathMpiexec -and -not $_.node.mpiCredential.sameAsPath
+    })
+    if ($mismatched.Count -gt 0) {
+        $detail = ''
+        foreach ($n in $mismatched) {
+            $detail += '  ' + $n.node.computerName + [Environment]::NewLine
+            $detail += '      AEDT 用 : ' + [string]$n.node.mpiCredential.aedtMpiexec + [Environment]::NewLine
+            $detail += '      PATH 上 : ' + [string]$n.node.mpiCredential.pathMpiexec + [Environment]::NewLine
+        }
+        Add-Finding -Level 'INFO' -Title 'AEDT 求解用的 mpiexec 不是 PATH 上那一支' `
+            -Detail ($detail + 'HFSS 分散求解呼叫的是 AEDT 目錄底下的 mpiexec。') `
+            -Fix '做 -register／-validate 一律用上面「AEDT 用」的那個完整路徑。'
+    }
+
     # 6. 使用者帳號
     Write-Step '比對使用者帳號'
     $users = @{}
@@ -1772,18 +1849,89 @@ foreach ($s in (Get-ServiceLike -Pattern 'Platform MPI|PCMPI')) {
 }
 
 # AEDT 自帶的 MPI 執行檔（服務沒裝時仍看得到檔案，判斷「有沒有東西可用」）
+#
+# 路徑一定要含 common\fluent_mpi\...。2026-09-15 實測：HFSS 分散求解真正呼叫的是
+#   <AEDT>\common\fluent_mpi\multiport\mpi\win64\intel21\bin\mpiexec.exe
+# 不是 PATH 上的 oneAPI mpiexec。只比對 PATH 上那支會得到假的通過。
 $mpiBinaries = @()
+$aedtMpiexec = ''
 foreach ($i in $installs) {
     foreach ($pat in @('common\mpi\*\*\hydra_service.exe', 'common\mpi\*\*\*\hydra_service.exe',
-                       'common\mpi\*\*\mpiexec.exe')) {
+                       'common\mpi\*\*\mpiexec.exe',
+                       'common\fluent_mpi\multiport\mpi\win64\*\bin\mpiexec.exe',
+                       'common\fluent_mpi\multiport\mpi\win64\*\bin\hydra_service.exe')) {
         foreach ($f in (Get-Item -Path (Join-Path $i.Root $pat) -ErrorAction SilentlyContinue)) {
             $mpiBinaries += (Protect-Text $f.FullName)
+            # fluent_mpi 底下同時有 intel、intel21、ms 三套。2026-09-15 從實際卡住的
+            # 求解命令列抓到，AEDT 2026 R1 用的是 intel21，所以優先挑它；
+            # 挑錯會讓使用者拿錯的 mpiexec 去 -validate，得到假的通過。
+            if ($f.Name -eq 'mpiexec.exe' -and $f.FullName -match 'fluent_mpi') {
+                if ($f.FullName -like '*\intel21\*' -or -not $aedtMpiexec) {
+                    if (-not ($aedtMpiexec -like '*\intel21\*')) { $aedtMpiexec = $f.FullName }
+                }
+            }
         }
     }
 }
 if ($mpiBinaries.Count -gt 0) {
     $sec = Add-Section 'AEDT 內附的 MPI 執行檔'
     foreach ($b in ($mpiBinaries | Select-Object -Unique)) { Add-Row $sec $b }
+}
+
+# Intel MPI 帳密：mpiexec -register 寫的是「執行者自己的」HKCU，所以每一台、
+# 每一個要跑求解的帳號都要各自註冊一次。
+#
+# 2026-09-15 實測：只在發起端註冊，求解會卡在「Determining memory availability on
+# distributed machines」完全不動，而且不跳任何錯誤。真正的錯誤只在對端的 mpiexec
+# 裡看得到：HYD_win_read_credentials: Unable to open registry key。
+$mpiCredential = [ordered]@{
+    registered  = $false
+    account     = ''
+    aedtMpiexec = (Protect-Text $aedtMpiexec)
+    pathMpiexec = ''
+    sameAsPath  = $false
+}
+try {
+    $credKey = 'HKCU:\Software\Intel\MPI'
+    if (Test-Path -LiteralPath $credKey) {
+        $cp = Get-ItemProperty -LiteralPath $credKey -ErrorAction SilentlyContinue
+        if ($cp -and (@($cp.PSObject.Properties.Name) -contains 'hydraAccount')) {
+            $mpiCredential.registered = $true
+            $mpiCredential.account = (Protect-Text ([string]$cp.hydraAccount))
+        }
+    }
+} catch { }
+try {
+    $pathMpi = @(Get-Command mpiexec.exe -ErrorAction SilentlyContinue) | Select-Object -First 1
+    if ($pathMpi) { $mpiCredential.pathMpiexec = (Protect-Text ([string]$pathMpi.Source)) }
+} catch { }
+if ($aedtMpiexec -and $mpiCredential.pathMpiexec) {
+    $mpiCredential.sameAsPath = ((Protect-Text $aedtMpiexec) -eq $mpiCredential.pathMpiexec)
+}
+
+$sec = Add-Section 'Intel MPI 帳密'
+if ($mpiCredential.registered) {
+    Add-Row $sec ('本機註冊狀態            已註冊  ' + $mpiCredential.account)
+} else {
+    Add-Row $sec '本機註冊狀態            未註冊'
+}
+if ($aedtMpiexec) { Add-Row $sec ('AEDT 求解用的 mpiexec   ' + (Protect-Text $aedtMpiexec)) }
+if ($mpiCredential.pathMpiexec) { Add-Row $sec ('PATH 上的 mpiexec       ' + $mpiCredential.pathMpiexec) }
+
+if (-not $mpiCredential.registered) {
+    $regCmd = 'mpiexec.exe'
+    if ($aedtMpiexec) { $regCmd = '"' + $aedtMpiexec + '"' }
+    Add-Finding -Level 'CONFIRMED' -Title ((Protect-Text $env:COMPUTERNAME) + ' 沒有註冊 Intel MPI 帳密') `
+        -Detail ('HKCU\Software\Intel\MPI 底下沒有 hydraAccount。' + [Environment]::NewLine +
+                 'mpiexec -register 寫的是執行者自己的 HKCU，每一台都要各自註冊一次。' + [Environment]::NewLine +
+                 '少了任何一台，求解會卡在「Determining memory availability on distributed machines」' + [Environment]::NewLine +
+                 '不動，而且不會跳任何錯誤訊息。') `
+        -Fix ('以實際跑求解的帳號「登入這台」執行（遠端觸發不會載入該使用者的設定檔，寫不進去）：' + [Environment]::NewLine +
+              '  ' + $regCmd + ' -register' + [Environment]::NewLine + [Environment]::NewLine +
+              '然後驗證，兩行都要 SUCCESS：' + [Environment]::NewLine +
+              '  ' + $regCmd + ' -validate' + [Environment]::NewLine +
+              '  ' + $regCmd + ' -validate -host <對端主機名稱>') `
+        -FixAction 'register-mpi-credential'
 }
 
 if ($mpiDetected.Count -eq 0) {
@@ -2102,6 +2250,7 @@ $nodeBlock = [ordered]@{
     rsm          = $rsmJson
     clusterEnv   = [pscustomobject]$clusterEnv
     mpi          = [ordered]@{ detected = @($mpiDetected); binaries = @($mpiBinaries | Select-Object -Unique) }
+    mpiCredential= [pscustomobject]$mpiCredential
     adapters     = @($adapterJson)
     selfResolve  = @($selfAddrs | ForEach-Object { Protect-Text $_ })
     firewall     = [ordered]@{

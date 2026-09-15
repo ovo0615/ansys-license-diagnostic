@@ -469,6 +469,78 @@ Assert-Finding -Case '案例18' -Findings $f -TitleLike '沒有設定 ANSYS_EM_E
 
 # ---------------------------------------------------------------------------
 Write-Host ''
+Write-Host '案例 20：Intel MPI 帳密要「每一台」都註冊' -ForegroundColor White
+# 2026-09-15 現場：兩台版本、防火牆、埠、RSM、hydra 全部正確，從 A 打到 B 的
+# mpiexec 測試也過了，求解還是卡在「Determining memory availability」不動——
+# 因為求解時 mpiexec 跑在 B，而 B 沒有註冊帳密。只驗單向會給出假的通過。
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01')
+    (New-Node -Name 'WS02' -NoMpiCredential $true)
+)
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS02 沒有註冊 Intel MPI 帳密' -Level 'CONFIRMED'
+# 沒註冊的是 WS02，不該連帶指控 WS01
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS01 沒有註冊 Intel MPI 帳密' -Absent
+# 處理方式要給得出實際指令，而且要講明「要登入那台」——遠端觸發寫不進 HKCU
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS02 沒有註冊 Intel MPI 帳密' -FixLike '-register'
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS02 沒有註冊 Intel MPI 帳密' -FixLike '登入'
+# 要指出這個症狀長什麼樣，否則下一個人不會把「卡住不動」跟帳密聯想在一起
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS02 沒有註冊 Intel MPI 帳密' -DetailLike 'Determining memory availability'
+# 要可以被自動修復流程接手
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS02 沒有註冊 Intel MPI 帳密' -FixAction 'register-mpi-credential'
+
+# 兩台都註冊好就要給正面結論，不然使用者不知道這一項到底檢查了沒
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01')
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例20' -Findings $f -TitleLike '每台都已註冊 Intel MPI 帳密' -Level 'OK'
+
+# 兩台都沒註冊要各報一條，不能只報一台
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -NoMpiCredential $true)
+    (New-Node -Name 'WS02' -NoMpiCredential $true)
+)
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS01 沒有註冊 Intel MPI 帳密' -Level 'CONFIRMED'
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'WS02 沒有註冊 Intel MPI 帳密' -Level 'CONFIRMED'
+
+# 註冊的帳號不一致只算疑點——可能是刻意用不同的服務帳號，不能斷定一定不行
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -MpiAccount 'TADC\userone')
+    (New-Node -Name 'WS02' -MpiAccount 'TADC\usertwo')
+)
+Assert-Finding -Case '案例20' -Findings $f -TitleLike '各機註冊的 MPI 帳號不一致' -Level 'SUSPECT'
+
+# 舊版報告沒有這個欄位時要說「不明」，不可以當成「沒註冊」去亮確定燈
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -NoMpiCredentialBlock $true)
+    (New-Node -Name 'WS02' -NoMpiCredentialBlock $true)
+)
+Assert-Finding -Case '案例20' -Findings $f -TitleLike 'MPI 帳密狀態不明' -Level 'MANUAL'
+Assert-Finding -Case '案例20' -Findings $f -TitleLike '沒有註冊 Intel MPI 帳密' -Absent
+Assert-Finding -Case '案例20' -Findings $f -TitleLike '每台都已註冊 Intel MPI 帳密' -Absent
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '案例 21：AEDT 求解用的 mpiexec 不是 PATH 上那一支' -ForegroundColor White
+# 這是今天最容易騙過人的地方：PATH 上是 oneAPI 的 mpiexec，AEDT 求解卻是用
+# 自己目錄底下 common\fluent_mpi\... 的那一支。拿錯的那支去 -validate 會過，
+# 但求解還是卡住。報告必須把正確的完整路徑寫出來。
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01' -PathMpiexec 'C:\Program Files (x86)\Intel\oneAPI\mpi\2021.8.0\bin\mpiexec.exe')
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例21' -Findings $f -TitleLike 'mpiexec 不是 PATH 上那一支' -Level 'INFO'
+Assert-Finding -Case '案例21' -Findings $f -TitleLike 'mpiexec 不是 PATH 上那一支' -DetailLike 'fluent_mpi'
+
+# 兩者相同時不要多嘴
+$f = Invoke-Merge @(
+    (New-Node -Name 'WS01')
+    (New-Node -Name 'WS02')
+)
+Assert-Finding -Case '案例21' -Findings $f -TitleLike 'mpiexec 不是 PATH 上那一支' -Absent
+
+# ---------------------------------------------------------------------------
+Write-Host ''
 Write-Host ('-' * 60) -ForegroundColor DarkGray
 Write-Host ('  通過 ' + $script:Pass + '，失敗 ' + $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })
 Write-Host ''
