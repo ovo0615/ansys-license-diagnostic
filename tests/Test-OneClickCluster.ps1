@@ -305,6 +305,12 @@ Assert-True '版本選單預設最新版'            ($wizardText -match 'Sort-O
 Assert-True '修復會收到選定的安裝目錄'      ($wizardText -match "-AedtRoot ' \+ \(Quote-Argument")
 Assert-True '環境變數不再寫死版本號'        ($wizardText -notmatch 'ANSYSEM_ROOT251')
 Assert-True '兩種安裝版面都要找'            ($wizardText -match 'AnsysEM.Win64.ansysedt\.exe')
+# USB 模式下，對端報告只能要求放在一個固定短路徑。
+# 叫人往工具解壓目錄底下第四層的 merge 貼檔案，一定有人貼錯，
+# 而錯法都表現成「怎麼還是只有一份」，看不出是貼錯地方。
+Assert-True 'USB 模式會掃本機收件匣'        ($wizardText -match '從收件匣收到對端報告')
+Assert-True 'USB 模式只要求一個固定路徑'    ($wizardText -match '只要記一個路徑，兩台都一樣')
+Assert-True '有給省掉搬檔的做法'            ($wizardText -match '本機 Administrators 群組')
 
 Write-Host ''
 Write-Host ('  通過 ' + $script:Passed + ' 項，失敗 ' + $script:Failed + ' 項。') -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })

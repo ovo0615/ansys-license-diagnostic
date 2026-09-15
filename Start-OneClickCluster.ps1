@@ -784,9 +784,29 @@ function Step-Exchange {
             Write-Log ('  從對端取回失敗：' + $_.Exception.Message)
         }
     } else {
-        Write-Log '  USB 模式：請把下面這個資料夾整個複製到另一台的同一個位置，兩台各按一次「開始」。'
+        Write-Log '  USB 模式。只要記一個路徑，兩台都一樣：'
         Write-Log ('    ' + $localInbox)
-        Write-Log ('    對端也做完後，把對端的 .node.json 放進：' + $mergeDir)
+        Write-Log ''
+        Write-Log '    1. 把這個資料夾裡的 .node.json 複製到另一台的同一個路徑'
+        Write-Log '    2. 在另一台按一次「開始」，它會把自己的報告也放進那裡'
+        Write-Log '    3. 把另一台的 .node.json 複製回這台的同一個路徑，再按一次「開始」'
+        Write-Log ''
+        Write-Log '    想省掉搬檔：請對端的使用者把你加進那台的本機 Administrators 群組，'
+        Write-Log ('    ' + $State.Peer + ' 的 C$ 就會通，之後兩台會自動互傳。')
+    }
+
+    # 無論走網路還是 USB，都把本機收件匣裡「不是自己的」節點報告收進彙整資料夾。
+    # 這樣現場只要記一個固定的短路徑，不必去翻工具解壓到哪裡、底下第幾層。
+    # 深路徑照著打一定會出錯，而錯法都表現成「怎麼還是只有一份」。
+    try {
+        Get-ChildItem -LiteralPath $localInbox -Filter '*.node.json' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike ($State.LocalName + '*') } |
+            ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $mergeDir -Force
+                Write-Log ('  從收件匣收到對端報告：' + $_.Name)
+            }
+    } catch {
+        Write-Log ('  讀取本機收件匣失敗：' + $_.Exception.Message)
     }
 
     $count = @(Get-ChildItem -LiteralPath $mergeDir -Filter '*.node.json' -File -ErrorAction SilentlyContinue).Count
@@ -795,6 +815,9 @@ function Step-Exchange {
         Write-Log ''
         Write-Log '  ▶ 下一步：到另一台開同一支工具、填本機名稱當對端，按一次「開始」。'
         Write-Log '    然後回到這台再按一次「開始」，會自動接下去。'
+        if (-not $State.ShareAvailable) {
+            Write-Log ('    USB 模式記得把對端的 .node.json 複製到：' + $localInbox)
+        }
         return @{ Status = 'Wait'; Detail = '等待對端執行（目前只有 1 份）' }
     }
     return @{ Status = 'Pass'; Detail = ($count.ToString() + ' 份節點報告已就位') }
