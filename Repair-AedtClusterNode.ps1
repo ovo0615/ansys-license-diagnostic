@@ -88,6 +88,93 @@ function Grant-TempAccess {
     }
 }
 
+function Get-ExcludedTcpRange {
+    <#
+        Windows 會保留一整段一整段的 TCP 埠給 Hyper-V／WinNAT／WSL 之類使用。
+        保留區裡的埠 bind 起來會失敗，錯誤是 WSAEACCES（10013）——
+        不是「被占用」而是「不准用」，訊息看起來像權限問題。
+
+        這些範圍每台機器不一樣，而且重開機後可能變動，所以只能現查不能寫死。
+    #>
+    $ranges = @()
+    try {
+        $out = & netsh int ipv4 show excludedportrange protocol=tcp 2>&1
+        foreach ($line in $out) {
+            if ("$line" -match '^\s*(\d+)\s+(\d+)') {
+                $ranges += [pscustomobject]@{ Start = [int]$Matches[1]; End = [int]$Matches[2] }
+            }
+        }
+    } catch { }
+    return $ranges
+}
+
+function Test-PortRangeClear {
+    <# 這一段有沒有跟任何保留區重疊。純計算，沒有副作用。 #>
+    param(
+        [Parameter(Mandatory = $true)][int] $Start,
+        [Parameter(Mandatory = $true)][int] $End,
+        [object[]] $Excluded = @()
+    )
+    foreach ($r in @($Excluded)) {
+        if ($null -eq $r) { continue }
+        if (([int]$r.Start -le $End) -and ([int]$r.End -ge $Start)) { return $false }
+    }
+    return $true
+}
+
+function Test-PortBindable {
+    <#
+        真的去 bind 一次。只看保留清單不夠——別的程式已經占住也會失敗，
+        而 Intel MPI 是從範圍的「第一個埠」開始試，撞到就放棄不往後找。
+    #>
+    param([int] $Port)
+    try {
+        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Any, $Port)
+        $listener.Start()
+        $listener.Stop()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Select-ToolkitPortPlan {
+    <#
+        挑一組「AnsoftCOM + Intel MPI」的埠範圍，避開 Windows 保留區。
+
+        候選是固定順序的，兩台機器各自跑也會挑到同一組——只要它們的保留區相近。
+        挑完會把選到的範圍記下來，讓報告講得出為什麼不是預設那一組。
+    #>
+    param(
+        [object[]] $Excluded = @(),
+        # 測試要能不碰真實通訊埠就驗挑選邏輯，所以 bind 檢查可以換掉。
+        [scriptblock] $BindTest = $null
+    )
+    if ($null -eq $BindTest) { $BindTest = { param($Port) Test-PortBindable -Port $Port } }
+    $candidates = @(
+        [pscustomobject]@{ ComStart = 55000; ComEnd = 55499; MpiStart = 55500; MpiEnd = 55999 },
+        [pscustomobject]@{ ComStart = 56000; ComEnd = 56499; MpiStart = 56500; MpiEnd = 56999 },
+        [pscustomobject]@{ ComStart = 57000; ComEnd = 57499; MpiStart = 57500; MpiEnd = 57999 },
+        [pscustomobject]@{ ComStart = 58000; ComEnd = 58499; MpiStart = 58500; MpiEnd = 58999 }
+    )
+    foreach ($c in $candidates) {
+        if (-not (Test-PortRangeClear -Start $c.ComStart -End $c.ComEnd -Excluded $Excluded)) { continue }
+        if (-not (Test-PortRangeClear -Start $c.MpiStart -End $c.MpiEnd -Excluded $Excluded)) { continue }
+        # Intel MPI 只試第一個埠，所以那一個一定要 bind 得起來
+        if (-not (& $BindTest $c.MpiStart)) { continue }
+        if (-not (& $BindTest $c.ComStart)) { continue }
+        return [pscustomobject]@{
+            Found    = $true
+            ComRange = ($c.ComStart.ToString() + ':' + $c.ComEnd)
+            ComRule  = ($c.ComStart.ToString() + '-' + $c.ComEnd)
+            MpiRange = ($c.MpiStart.ToString() + ':' + $c.MpiEnd)
+            MpiRule  = ($c.MpiStart.ToString() + '-' + $c.MpiEnd)
+            IsDefault = ($c.MpiStart -eq 55500)
+        }
+    }
+    return [pscustomobject]@{ Found = $false; ComRange = ''; ComRule = ''; MpiRange = ''; MpiRule = ''; IsDefault = $false }
+}
+
 function Get-HydraServicePort {
     $hydra = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object {
         $_.Name -match 'hydra' -or $_.DisplayName -match 'Hydra Process Manager'
@@ -220,17 +307,28 @@ if (-not $SkipServiceChanges) {
 }
 
 $hydraPort = Get-HydraServicePort
+
+# 埠範圍不能寫死。Windows 的保留區（Hyper-V／WinNAT／WSL）每台不同、重開機後還會變，
+# 撞上去 bind 會得到 WSAEACCES（10013），而 Intel MPI 只試範圍的第一個埠就放棄——
+# 症狀是連本機單機都跑不起來，錯誤訊息卻在講 remote host，非常難查。
+$excludedRanges = Get-ExcludedTcpRange
+$portPlan = Select-ToolkitPortPlan -Excluded $excludedRanges
+if (-not $portPlan.Found) {
+    throw ('找不到可用的連接埠範圍：候選區間都與 Windows 保留埠重疊或 bind 不起來。' +
+           '請執行 netsh int ipv4 show excludedportrange protocol=tcp 查看保留區。')
+}
+
 $networkTargets = [ordered]@{
     ANSYS_EM_EXEC_DIR = $AedtRoot
-    ANSYSEM_LISTEN_PORT_RANGE = '55000:55499'
-    I_MPI_PORT_RANGE = '55500:55999'
+    ANSYSEM_LISTEN_PORT_RANGE = $portPlan.ComRange
+    I_MPI_PORT_RANGE = $portPlan.MpiRange
     I_MPI_HYDRA_SERVICE_PORT = [string]$hydraPort
 }
 $firewallRules = @(
     [pscustomobject]@{ DisplayName = 'AEDT MPI Toolkit - RSM'; LocalPort = '32958'; Profiles = 'Domain,Private'; RemoteAddress = 'LocalSubnet' },
     [pscustomobject]@{ DisplayName = 'AEDT MPI Toolkit - Hydra'; LocalPort = [string]$hydraPort; Profiles = 'Domain,Private'; RemoteAddress = 'LocalSubnet' },
-    [pscustomobject]@{ DisplayName = 'AEDT MPI Toolkit - AnsoftCOM'; LocalPort = '55000-55499'; Profiles = 'Domain,Private'; RemoteAddress = 'LocalSubnet' },
-    [pscustomobject]@{ DisplayName = 'AEDT MPI Toolkit - Intel MPI'; LocalPort = '55500-55999'; Profiles = 'Domain,Private'; RemoteAddress = 'LocalSubnet' }
+    [pscustomobject]@{ DisplayName = 'AEDT MPI Toolkit - AnsoftCOM'; LocalPort = $portPlan.ComRule; Profiles = 'Domain,Private'; RemoteAddress = 'LocalSubnet' },
+    [pscustomobject]@{ DisplayName = 'AEDT MPI Toolkit - Intel MPI'; LocalPort = $portPlan.MpiRule; Profiles = 'Domain,Private'; RemoteAddress = 'LocalSubnet' }
 )
 $networkSettings = [ordered]@{}
 $networkApplied = $false

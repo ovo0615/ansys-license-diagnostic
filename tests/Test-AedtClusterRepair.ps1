@@ -48,6 +48,67 @@ function Invoke-RepairFixture {
     return $process.ExitCode
 }
 
+
+# ---------------------------------------------------------------------------
+#  連接埠範圍：不能寫死
+#
+#  實機事故：修復把 I_MPI_PORT_RANGE 設成 55500:55999，但那台 Windows 的保留區
+#  含 55414-55513，於是 55500 bind 不起來（WSAEACCES / 10013）。
+#  Intel MPI 只試範圍的第一個埠，撞到就放棄不往後找，結果連本機單機都跑不起來，
+#  而錯誤訊息講的是「cannot launch processes on remote host」——完全指錯方向。
+#
+#  這些保留區由 Hyper-V／WinNAT／WSL 產生，每台不同、重開機後還會變，
+#  所以只能現查現挑。下面測的是挑選邏輯本身。
+# ---------------------------------------------------------------------------
+$repairSrc = Get-Content -LiteralPath $repairScript -Raw
+$fnStart = $repairSrc.IndexOf('function Get-ExcludedTcpRange')
+$fnEnd   = $repairSrc.IndexOf('function Get-HydraServicePort')
+if ($fnStart -lt 0 -or $fnEnd -le $fnStart) {
+    Write-Host '  [FAIL] 取不到連接埠挑選函式' -ForegroundColor Red
+    $script:Fail++
+} else {
+    Invoke-Expression $repairSrc.Substring($fnStart, $fnEnd - $fnStart)
+
+    $fake = @(
+        [pscustomobject]@{ Start = 55414; End = 55513 },
+        [pscustomobject]@{ Start = 49685; End = 49784 }
+    )
+    # 這就是實機那一組：範圍開頭落在保留區裡
+    Assert-True '開頭落在保留區要判定為不可用' (-not (Test-PortRangeClear -Start 55500 -End 55999 -Excluded $fake))
+    # 尾端落在保留區裡也一樣不能用
+    Assert-True '尾端落在保留區要判定為不可用' (-not (Test-PortRangeClear -Start 55000 -End 55499 -Excluded $fake))
+    # 保留區整段被包在中間
+    Assert-True '保留區被包在中間也不可用'     (-not (Test-PortRangeClear -Start 55000 -End 55999 -Excluded $fake))
+    # 完全不相交才算可用
+    Assert-True '不相交才算可用'               (Test-PortRangeClear -Start 56000 -End 56499 -Excluded $fake)
+    Assert-True '緊鄰但不重疊算可用'           (Test-PortRangeClear -Start 55514 -End 55999 -Excluded $fake)
+    Assert-True '沒有保留區時都可用'           (Test-PortRangeClear -Start 55500 -End 55999 -Excluded @())
+
+    # bind 檢查一律回 True，這樣測的是挑選邏輯而不是這台機器當下的通訊埠狀況
+    $alwaysBindable = { param($Port) $true }
+    $plan = Select-ToolkitPortPlan -Excluded $fake -BindTest $alwaysBindable
+    Assert-True '撞到保留區時要換一組'         ($plan.Found -and -not $plan.IsDefault)
+    Assert-True '換到的那組不會再撞'           (Test-PortRangeClear -Start ([int]($plan.MpiRange -split ':')[0]) `
+                                                                   -End   ([int]($plan.MpiRange -split ':')[1]) -Excluded $fake)
+    Assert-True '兩段範圍不重疊'               ([int]($plan.ComRange -split ':')[1] -lt [int]($plan.MpiRange -split ':')[0])
+    Assert-True '防火牆規則用連字號格式'       ($plan.MpiRule -match '^\d+-\d+$')
+    Assert-True '環境變數用冒號格式'           ($plan.MpiRange -match '^\d+:\d+$')
+
+    # 沒有保留區時應該維持預設那一組，不要無故換
+    $planDefault = Select-ToolkitPortPlan -Excluded @() -BindTest $alwaysBindable
+    Assert-True '沒有衝突時維持預設範圍'       ($planDefault.Found -and $planDefault.IsDefault)
+
+    # 保留清單查不到、但那個埠就是 bind 不起來（被別的程式占住）時也要換一組。
+    # 只看保留清單是不夠的——實機就是靠真的去 bind 才發現問題。
+    $firstBlockBusy = {
+        param($Port)
+        if ($Port -eq 55000 -or $Port -eq 55500) { return $false }
+        return $true
+    }
+    $planBusy = Select-ToolkitPortPlan -Excluded @() -BindTest $firstBlockBusy
+    Assert-True 'bind 不起來時也要換一組'       ($planBusy.Found -and -not $planBusy.IsDefault)
+}
+
 Write-Host ''
 Write-Host 'AEDT 串機本機修復測試' -ForegroundColor Cyan
 Write-Host ('-' * 60) -ForegroundColor DarkGray
@@ -85,8 +146,20 @@ try {
     $reports = @(Get-ChildItem -LiteralPath $reportPath -Filter '*.json' -File | Sort-Object LastWriteTime)
     $network = Get-Content -LiteralPath $reports[-1].FullName -Raw | ConvertFrom-Json
     Assert-True '網路修復規劃模式不變更系統且成功' ($exitNetwork -eq 0 -and $network.networkPlanOnly -eq $true)
-    Assert-True 'AnsoftCOM 連接埠範圍固定' ($network.networkSettings.ANSYSEM_LISTEN_PORT_RANGE.target -eq '55000:55499')
-    Assert-True 'Intel MPI 連接埠範圍固定' ($network.networkSettings.I_MPI_PORT_RANGE.target -eq '55500:55999')
+    # 範圍不再寫死——會避開 Windows 保留埠，所以只能驗格式與一致性，不能驗特定數字。
+    $comTarget = [string]$network.networkSettings.ANSYSEM_LISTEN_PORT_RANGE.target
+    $mpiTarget = [string]$network.networkSettings.I_MPI_PORT_RANGE.target
+    Assert-True 'AnsoftCOM 連接埠範圍格式正確' ($comTarget -match '^\d+:\d+$')
+    Assert-True 'Intel MPI 連接埠範圍格式正確' ($mpiTarget -match '^\d+:\d+$')
+    Assert-True '兩段連接埠範圍不重疊' `
+        ([int]($comTarget -split ':')[1] -lt [int]($mpiTarget -split ':')[0])
+    # 防火牆規則開的必須就是環境變數設的那一段，否則規則開了也沒用
+    $comRule = @($network.firewallRules | Where-Object { $_.displayName -match 'AnsoftCOM' })[0]
+    $mpiRule = @($network.firewallRules | Where-Object { $_.displayName -match 'Intel MPI' })[0]
+    Assert-True '防火牆開的就是環境變數那一段（AnsoftCOM）' `
+        ([string]$comRule.localPort -eq ($comTarget -replace ':', '-'))
+    Assert-True '防火牆開的就是環境變數那一段（Intel MPI）' `
+        ([string]$mpiRule.localPort -eq ($mpiTarget -replace ':', '-'))
     Assert-True 'RSM MPI 執行目錄指向 AEDT 安裝目錄' ($network.networkSettings.ANSYS_EM_EXEC_DIR.target -eq $aedtRoot)
     Assert-True '包含 RSM、Hydra、AnsoftCOM 與 MPI 防火牆規則' (@($network.firewallRules).Count -eq 4)
     Assert-True '防火牆規則只允許網域／私人設定檔與本機子網路' (
