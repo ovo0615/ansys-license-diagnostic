@@ -10,7 +10,7 @@
 
 ## 為什麼工作群組比較麻煩
 
-網域環境裡，兩台電腦信任同一個網域控制站，`TADC\jeff.hong` 在哪台都是同一個人。
+網域環境裡，兩台電腦信任同一個網域控制站，`<網域>\<帳號>` 在哪台都是同一個人。
 
 工作群組沒有這個共同信任。Windows 的做法是「**同名同密碼**就當成同一個人」——
 所以兩台必須各自建立一個**名稱與密碼逐字相同**的本機帳號。
@@ -80,7 +80,7 @@ Test-Connection -ComputerName 對端 -Count 2
 IP 與電腦名稱（系統管理員權限才能存檔）：
 
 ```
-192.168.6.6    NB208
+192.168.10.21    WS02
 ```
 
 > 之後的所有設定一律用**電腦名稱**，不要用 IP——AEDT 與 MPI 的機器清單都是用名稱比對。
@@ -112,7 +112,7 @@ Set-NetConnectionProfile -InterfaceAlias '乙太網路' -NetworkCategory Private
 ```powershell
 $mpi = 'C:\Program Files\ANSYS Inc\v261\AnsysEM\common\fluent_mpi\multiport\mpi\win64\intel21\bin\mpiexec.exe'
 & $mpi -register
-# account (domain\user): NB208\ansys
+# account (domain\user): WS02\ansys
 ```
 
 **一樣要在每一台上各註冊一次，而且要互動登入那台。** 這一點與網域環境完全相同，
@@ -125,7 +125,7 @@ $mpi = 'C:\Program Files\ANSYS Inc\v261\AnsysEM\common\fluent_mpi\multiport\mpi\
 |---|---|
 | User Name | `ansys` |
 | Password | 該帳號的密碼 |
-| Domain/Workgroup | **該台電腦自己的名稱**（例 `NB208`），不是工作群組名稱 |
+| Domain/Workgroup | **該台電腦自己的名稱**（例 `WS02`），不是工作群組名稱 |
 
 ---
 
@@ -165,6 +165,6 @@ Test-Path '\B\C$\Windows'                              # 要 True
 | Microsoft 帳戶 | 不影響 | **不能用** |
 | `LocalAccountTokenFilterPolicy` | 不需要 | **必須設為 1** |
 | 名稱解析 | DNS 自動 | 可能要寫 `hosts` |
-| `-register` 帳號格式 | `TADC\jeff.hong` | `NB208\ansys` |
+| `-register` 帳號格式 | `<網域>\<帳號>` | `WS02\ansys` |
 | RSM 的 Domain 欄位 | 網域名稱 | 該台電腦名稱 |
 | 每台都要各自 `-register` | **是** | **是**（完全相同） |
