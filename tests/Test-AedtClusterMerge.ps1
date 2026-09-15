@@ -419,9 +419,15 @@ Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優
     -Level 'CONFIRMED' -FixAction 'fix-network-topology'
 Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
     -DetailLike 'Determining memory availability'
-# 處理指令要直接給，不要只說「請調整優先權」
+# 處理指令要直接給，不要只說「請調整設定」
 Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
-    -FixLike 'Set-NetIPInterface'
+    -FixLike 'Disable-NetAdapter'
+# 還要給還原的方式——叫人停用網卡卻不說怎麼開回來是不負責任的
+Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
+    -FixLike 'Enable-NetAdapter'
+# 實機驗過改 Metric 沒有用，必須寫進去，否則下一個人會再試一次同樣的死路
+Assert-Finding -Case '案例19' -Findings $f -TitleLike 'WS01 的虛擬網卡優先權高於實體網卡' `
+    -FixLike 'Set-NetIPInterface -InterfaceMetric'
 
 # 虛擬介面排在後面是常態，不可以亮確定燈——不然幾乎每台都會亮，燈就不值錢了
 $f = Invoke-Merge @(

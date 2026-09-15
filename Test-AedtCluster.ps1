@@ -1309,16 +1309,20 @@ function Invoke-MergeMode {
                    '叫引擎回連。它挑的是 Metric 最小（最優先）的那一個介面。' + [Environment]::NewLine + [Environment]::NewLine +
                    '  虛擬介面 : ' + $w.Virtual.alias + '  ' + $w.Virtual.ipv4 + '  Metric ' + $w.Virtual.metric + [Environment]::NewLine +
                    '  實體介面 : ' + $w.Physical.alias + '  ' + $w.Physical.ipv4 + '  Metric ' + $w.Physical.metric + [Environment]::NewLine + [Environment]::NewLine +
-                   '虛擬介面排在前面，對端會拿到一個它沒有路由的位址，永遠連不回來。' + [Environment]::NewLine +
+                   '對端會拿到一個它沒有路由的位址，永遠連不回來。' + [Environment]::NewLine +
                    '症狀是求解卡在「Determining memory availability on distributed machines」' + [Environment]::NewLine +
                    '不動，而錯誤訊息完全沒提到網卡。')
         Add-Finding -Level 'CONFIRMED' -Title ($w.Machine + ' 的虛擬網卡優先權高於實體網卡') `
             -Detail $detail `
-            -Fix ('以系統管理員身分執行，把虛擬介面的優先權降到實體介面後面：' + [Environment]::NewLine +
-                  "  Set-NetIPInterface -InterfaceAlias '" + $w.Virtual.alias + "' -AddressFamily IPv4 -InterfaceMetric " +
-                  ([int]$w.Physical.metric + 35) + [Environment]::NewLine +
-                  '然後重新啟動 AEDT。要還原：-AutomaticMetric Enabled。' + [Environment]::NewLine +
-                  '這只改路由優先順序，不會停用 Hyper-V／WSL／VPN。') `
+            -Fix ('以系統管理員身分停用該虛擬介面，然後重新啟動 AEDT：' + [Environment]::NewLine +
+                  "  Disable-NetAdapter -Name '" + $w.Virtual.alias + "' -Confirm:`$false" + [Environment]::NewLine +
+                  '還原：' + [Environment]::NewLine +
+                  "  Enable-NetAdapter -Name '" + $w.Virtual.alias + "' -Confirm:`$false" + [Environment]::NewLine + [Environment]::NewLine +
+                  '停用期間 Hyper-V／WSL／Docker 的預設網路會不能用，求解完再開回來。' + [Environment]::NewLine + [Environment]::NewLine +
+                  '注意：改介面 Metric（Set-NetIPInterface -InterfaceMetric）沒有用。' + [Environment]::NewLine +
+                  '實機驗證過：把虛擬介面的 Metric 從 15 改成 60、實體維持 25，' + [Environment]::NewLine +
+                  '重開 AEDT 之後遠端引擎拿到的仍然是虛擬介面的位址。' + [Environment]::NewLine +
+                  'AEDT 挑位址不是看路由優先權，所以只能讓那個位址不存在。') `
             -FixAction 'fix-network-topology' -FixOn $w.Machine
     }
     if ($metricUnknown.Count -gt 0) {
