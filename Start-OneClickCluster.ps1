@@ -273,11 +273,15 @@ function Get-AccountCompatibility {
     }
 }
 
-function Get-ExchangeShareCandidates {
+function Get-PeerShareProbe {
     <#
-        交換資料夾的候選路徑，依序嘗試。
-        C$ 是 Windows 內建的管理共用，不必在客戶機器上開新的共用；
-        能不能寫進去本身就是「兩台帳密一致」的好指標。
+        回傳「要探測哪個共用根」以及「探到之後交換資料夾在哪」。
+
+        刻意直接組出共用根，不從交換路徑往回 Split-Path：
+        Split-Path -Parent 對 UNC 根（\\NB\MpiExchange）會回空字串，
+        再把空字串丟給下一個 Split-Path 就會丟例外
+        「無法將引數繫結到 'Path' 參數，因為它是個空字串」。
+        這在實機上讓整個步驟 2 掛掉，而名稱解析與 RSM 埠其實都是通的。
     #>
     param(
         [Parameter(Mandatory = $true)][string] $Peer,
@@ -285,9 +289,19 @@ function Get-ExchangeShareCandidates {
     )
     $tail = 'AnsysWork\MpiToolkit\exchange'
     if ($CaseId) { $tail = $tail + '\' + $CaseId }
+    $named = '\\' + $Peer + '\MpiExchange'
+    if ($CaseId) { $named = $named + '\' + $CaseId }
     return @(
-        ('\\' + $Peer + '\C$\' + $tail),
-        ('\\' + $Peer + '\MpiExchange\' + $CaseId).TrimEnd('\')
+        [pscustomobject]@{
+            Root     = ('\\' + $Peer + '\C$')
+            Exchange = ('\\' + $Peer + '\C$\' + $tail)
+            Label    = '內建管理共用 C$'
+        },
+        [pscustomobject]@{
+            Root     = ('\\' + $Peer + '\MpiExchange')
+            Exchange = $named
+            Label    = '具名共用 MpiExchange'
+        }
     )
 }
 
@@ -563,29 +577,35 @@ function Step-PeerReach {
     $State.PeerRsmOpen = $rsmOk
 
     $shareOk = $false
-    foreach ($candidate in (Get-ExchangeShareCandidates -Peer $peer)) {
-        $root = Split-Path -Parent (Split-Path -Parent $candidate)
+    $shareLabel = ''
+    foreach ($probe in (Get-PeerShareProbe -Peer $peer -CaseId $State.CaseId)) {
         try {
-            if (Test-Path -LiteralPath $root) { $shareOk = $true; $State.PeerShareRoot = $candidate; break }
-        } catch { }
-    }
-    if (-not $shareOk) {
-        try {
-            if (Test-Path -LiteralPath ('\\' + $peer + '\C$')) {
+            if (Test-Path -LiteralPath $probe.Root) {
                 $shareOk = $true
-                $State.PeerShareRoot = (Get-ExchangeShareCandidates -Peer $peer)[0]
+                $shareLabel = $probe.Label
+                $State.PeerShareRoot = $probe.Exchange
+                break
             }
-        } catch { }
+        } catch {
+            Write-Log ('  ' + $probe.Root + ' 探測失敗：' + $_.Exception.Message)
+        }
     }
     $State.ShareAvailable = $shareOk
     if ($shareOk) {
-        Write-Log ('  網路共用：可存取 \\' + $peer + '\C$，交換報告走網路。')
+        Write-Log ('  網路共用：可存取 ' + $peer + ' 的' + $shareLabel + '，交換報告走網路。')
         return @{ Status = 'Pass'; Detail = '解析 + 共用皆通' }
     }
     Write-Log ('  網路共用：無法存取 \\' + $peer + '\C$，改用 USB 模式。')
-    Write-Log '    註：工作群組環境下存取 C$ 失敗，通常就是兩台帳號名稱或密碼不一致——'
-    Write-Log '    這與 Intel MPI 跨機認證的要求是同一件事，請一併確認。'
-    return @{ Status = 'Warn'; Detail = '共用不通，改 USB 模式' }
+    # 原因分兩種，處理方式完全不同——講錯會害人往錯的方向查半天。
+    if ($State.AccountKind -eq 'Domain') {
+        Write-Log '    在網域環境下，這通常只是「你在對端不是本機系統管理員」：'
+        Write-Log '    C$ 是管理共用，只有對端的系統管理員存取得到。'
+        Write-Log '    這不影響 MPI 串機，只是報告要改用 USB 交換。可以直接往下做。'
+    } else {
+        Write-Log '    工作群組環境下存取 C$ 失敗，通常就是兩台帳號名稱或密碼不一致——'
+        Write-Log '    這與 Intel MPI 跨機認證的要求是同一件事，請一併確認。'
+    }
+    return @{ Status = 'Warn'; Detail = '共用不通，改用 USB 模式交換報告' }
 }
 
 function Step-NodeCheck {
@@ -634,7 +654,11 @@ function Step-Exchange {
 
     $pulled = 0
     if ($State.ShareAvailable) {
-        $peerInbox = '\\' + $State.Peer + '\C$\AnsysWork\MpiToolkit\exchange\' + $State.CaseId
+        # 用步驟 2 實際探到的那個共用，不要寫死 C$——探到的是具名共用時寫死會失敗。
+        $peerInbox = $State.PeerShareRoot
+        if ([string]::IsNullOrWhiteSpace($peerInbox)) {
+            $peerInbox = (Get-PeerShareProbe -Peer $State.Peer -CaseId $State.CaseId)[0].Exchange
+        }
         # 順便把本機的推過去，對端就算還沒開工具也拿得到
         try {
             if (-not (Test-Path -LiteralPath $peerInbox)) { New-Item -ItemType Directory -Path $peerInbox -Force | Out-Null }

@@ -153,12 +153,31 @@ Assert-Equal '判不出來時不能講成 OK'               'MANUAL' $unknown.Le
 
 # ---- 交換資料夾路徑 ---------------------------------------------------------
 Write-Host ''
-Write-Host '  Get-ExchangeShareCandidates / Get-LocalExchangePath' -ForegroundColor Cyan
-$candidates = Get-ExchangeShareCandidates -Peer 'WS02' -CaseId 'PAIR-A-B'
-Assert-True  '第一順位是內建管理共用 C$'  ($candidates[0] -eq '\\WS02\C$\AnsysWork\MpiToolkit\exchange\PAIR-A-B')
-Assert-True  '有第二順位的具名共用'        ($candidates.Count -ge 2)
+Write-Host '  Get-PeerShareProbe / Get-LocalExchangePath' -ForegroundColor Cyan
+$probes = Get-PeerShareProbe -Peer 'WS02' -CaseId 'PAIR-A-B'
+Assert-Equal '有兩個探測對象'              2 $probes.Count
+Assert-Equal '第一順位探測內建管理共用 C$' '\\WS02\C$' $probes[0].Root
+Assert-Equal '第一順位的交換資料夾' '\\WS02\C$\AnsysWork\MpiToolkit\exchange\PAIR-A-B' $probes[0].Exchange
+Assert-Equal '第二順位探測具名共用'        '\\WS02\MpiExchange' $probes[1].Root
+Assert-Equal '第二順位的交換資料夾' '\\WS02\MpiExchange\PAIR-A-B' $probes[1].Exchange
+
+# 這是實機上真的炸掉的那個 bug：舊版從交換路徑往回 Split-Path 兩層去湊共用根，
+# 而 Split-Path -Parent 對 UNC 根會回空字串，再丟進下一個 Split-Path 就丟例外
+# 「無法將引數繫結到 'Path' 參數，因為它是個空字串」——整個步驟 2 掛掉，
+# 但名稱解析與 RSM 埠其實都是通的。現在直接組出共用根，不做任何 Split-Path。
+foreach ($probe in $probes) {
+    Assert-True ('共用根不是空字串：' + $probe.Label) (-not [string]::IsNullOrWhiteSpace($probe.Root))
+    Assert-True ('共用根是 UNC：' + $probe.Label)     ($probe.Root -like '\\*')
+    Assert-True ('交換路徑不是空字串：' + $probe.Label) (-not [string]::IsNullOrWhiteSpace($probe.Exchange))
+    Assert-True ('路徑全是 ASCII：' + $probe.Label)   (Test-AsciiText $probe.Exchange)
+}
+
+# 沒有案件編號時也不能生出結尾是反斜線的路徑
+$noCase = Get-PeerShareProbe -Peer 'WS02'
+Assert-Equal '沒有案件編號時的具名共用交換路徑' '\\WS02\MpiExchange' $noCase[1].Exchange
+Assert-True  '沒有案件編號時路徑不以反斜線結尾' ($noCase[0].Exchange -notmatch '\\$')
+
 Assert-Equal '本機收件匣路徑' 'C:\AnsysWork\MpiToolkit\exchange\PAIR-A-B' (Get-LocalExchangePath -CaseId 'PAIR-A-B')
-Assert-True  '交換路徑全部是 ASCII'        (Test-AsciiText $candidates[0])
 
 # ---- 結論收斂 ---------------------------------------------------------------
 Write-Host ''
@@ -241,6 +260,11 @@ Assert-True '精靈會呼叫既有的設定產生器'   ($wizardText -match 'New
 Assert-True '精靈不自動送出求解'           ($wizardText -notmatch 'run-batch\.cmd.*Start-Process')
 Assert-True '精靈不關閉 AEDT'              ($wizardText -notmatch 'taskkill')
 Assert-True '精靈不接收密碼'               ($wizardText -notmatch '(?i)\$password')
+# C$ 不通在網域與工作群組是兩種完全不同的原因，處理方式也不同。
+# 講錯會害人往錯的方向查半天，所以訊息必須分開。
+Assert-True '共用不通時要分辨網域與工作群組' ($wizardText -match '不是本機系統管理員')
+Assert-True '網域情況要說可以直接往下做'     ($wizardText -match '可以直接往下做')
+Assert-True '步驟 2 不再用 Split-Path 湊共用根' ($wizardText -notmatch 'Split-Path -Parent \(Split-Path')
 
 Write-Host ''
 Write-Host ('  通過 ' + $script:Passed + ' 項，失敗 ' + $script:Failed + ' 項。') -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
