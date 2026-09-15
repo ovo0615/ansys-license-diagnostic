@@ -119,6 +119,24 @@ $ranked = @('v242', 'v261', 'v251', 'v252') |
 Assert-Equal '排序後第一個是最新版' 'v261' $ranked[0].Token
 Assert-Equal '排序後最後一個是最舊版' 'v242' $ranked[3].Token
 
+# ---- 離開碼判定 -------------------------------------------------------------
+# 這一段釘住一個實機上真的害人的 PowerShell 語意：
+#   Start-Process -PassThru 結束後讀 $process.ExitCode 會得到 $null（不丟例外），
+#   而 $null -lt 0 算出來是 True。
+# 於是 if ($code -lt 0) { 失敗 } 對一個成功的子程序成立，
+# 彙整明明產出了報告、離開碼 0，畫面卻寫「彙整未能執行」。
+# 第 5、8、9 步都踩過。
+Write-Host ''
+Write-Host '  Test-ExitCodeUnknown / Test-ExitCodeFailed' -ForegroundColor Cyan
+# 先把那個語意本身釘起來，免得有人日後又寫成 -lt 0
+Assert-Equal 'PowerShell 的 $null -lt 0 確實是 True' $true ($null -lt 0)
+Assert-Equal '取不到離開碼要判定為未知'  $true  (Test-ExitCodeUnknown $null)
+Assert-Equal '0 不是未知'                $false (Test-ExitCodeUnknown 0)
+Assert-Equal '未知不等於失敗'            $false (Test-ExitCodeFailed $null)
+Assert-Equal '離開碼 0 不是失敗'         $false (Test-ExitCodeFailed 0)
+Assert-Equal '離開碼 2 不是失敗（那是有發現）' $false (Test-ExitCodeFailed 2)
+Assert-Equal '離開碼 -1 才是失敗'        $true  (Test-ExitCodeFailed -1)
+
 # ---- 節點報告涵蓋率 ---------------------------------------------------------
 # 實機真的發生過：按了三次「開始」，彙整資料夾裡有三個檔案，工具說
 # 「3 份節點報告已就位」就放行——但三份全是同一台的，對端的根本沒到。
@@ -353,6 +371,12 @@ Assert-True '用台數而不是檔案數判斷到齊'    ($wizardText -match 'Ge
 Assert-True '缺料時要指名還缺哪一台'        ($wizardText -match '還缺這幾台的報告')
 # 只拿到身分卡片卻沒拿到節點報告，是複製時漏檔的典型症狀，要講出來。
 Assert-True '只收到身分卡片時要點出來'      ($wizardText -match '的身分卡片')
+# Start-Process -PassThru 拿不到離開碼，必須用 Diagnostics.Process。
+Assert-True '不再用 Start-Process 取離開碼' ($wizardText -notmatch '-PassThru?
+')
+Assert-True '子程序改用 Diagnostics.Process' ($wizardText -match 'New-Object Diagnostics\.Process')
+Assert-True '離開碼判定走專用函式'          ($wizardText -match 'Test-ExitCodeFailed \$result\.ExitCode')
+Assert-True '有區分「沒啟動」與「離開碼異常」' ($wizardText -match '子程序沒有啟動')
 
 Write-Host ''
 Write-Host ('  通過 ' + $script:Passed + ' 項，失敗 ' + $script:Failed + ' 項。') -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })

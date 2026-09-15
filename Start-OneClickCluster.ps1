@@ -120,6 +120,27 @@ function Resolve-PeerFromPair {
     return $others[0]
 }
 
+function Test-ExitCodeUnknown {
+    <#
+        離開碼取不到（$null）與「離開碼是負數」是兩件事，但在 PowerShell 裡
+        很容易混在一起——因為 $null -lt 0 會算出 True。
+
+        這不是假設，是實測：
+          Start-Process -PassThru 之後讀 $process.ExitCode 會得到 $null，
+          不丟例外；接著 if ($code -lt 0) 就成立，於是明明成功的子程序
+          被判定成「未能執行」。第 5、8、9 步都踩過這個。
+    #>
+    param($ExitCode)
+    return ($null -eq $ExitCode)
+}
+
+function Test-ExitCodeFailed {
+    <# 取不到離開碼時回 $false——不知道不等於失敗，要由呼叫端另外判斷。 #>
+    param($ExitCode)
+    if (Test-ExitCodeUnknown $ExitCode) { return $false }
+    return ([int]$ExitCode -lt 0)
+}
+
 function Get-NodeOwnerFromFileName {
     <#
         從節點報告的檔名認出它是哪一台產生的。
@@ -586,6 +607,11 @@ function Invoke-ChildScript {
     <#
         跑一支子腳本並把輸出倒進畫面。等待期間持續 DoEvents，視窗才不會變成白色未回應。
         逾時就殺掉——現場沒有人有耐心猜它是在跑還是掛了。
+
+        用 Diagnostics.Process 而不是 Start-Process -PassThru：後者結束之後讀
+        $process.ExitCode 會得到 $null（不丟例外），而 $null -lt 0 在 PowerShell
+        裡是 True，於是成功的子程序被判定成失敗。實測 Start-Process 給 $null、
+        Diagnostics.Process 給 0。Register-IntelMpiCredential.ps1 本來就是這樣寫的。
     #>
     param(
         [Parameter(Mandatory = $true)][string] $ScriptName,
@@ -595,16 +621,32 @@ function Invoke-ChildScript {
     $scriptPath = Join-Path $script:ToolRoot $ScriptName
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
         Write-Log ('  找不到 ' + $ScriptName + '，請重新解壓縮完整工具。')
-        return [pscustomobject]@{ ExitCode = -1; Output = '' }
+        return [pscustomobject]@{ ExitCode = -1; Output = ''; Ran = $false }
     }
-    $stdout = [IO.Path]::GetTempFileName()
-    $stderr = [IO.Path]::GetTempFileName()
     $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' + (Quote-Argument $scriptPath)
     if ($Arguments.Count -gt 0) { $argLine = $argLine + ' ' + ($Arguments -join ' ') }
+
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName               = (Join-Path $PSHOME 'powershell.exe')
+    $info.Arguments              = $argLine
+    $info.UseShellExecute        = $false
+    $info.CreateNoWindow         = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError  = $true
+
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $info
     $exitCode = -1
+    $ran      = $false
+    $text     = ''
     try {
-        $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $argLine `
-            -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if (-not $process.Start()) {
+            Write-Log ('  無法啟動 ' + $ScriptName + '。')
+            return [pscustomobject]@{ ExitCode = -1; Output = ''; Ran = $false }
+        }
+        # 非同步讀，否則輸出把管線塞滿時子程序會卡住不結束
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
         $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while (-not $process.HasExited) {
             [Windows.Forms.Application]::DoEvents()
@@ -615,23 +657,21 @@ function Invoke-ChildScript {
                 break
             }
         }
-        if ($process.HasExited) { $exitCode = $process.ExitCode }
+        [void]$process.WaitForExit(5000)
+        $ran = $true
+        $exitCode = [int]$process.ExitCode
+        $text = [string]$outTask.Result + [string]$errTask.Result
     } catch {
         Write-Log ('  執行 ' + $ScriptName + ' 失敗：' + $_.Exception.Message)
-        return [pscustomobject]@{ ExitCode = -1; Output = '' }
+        return [pscustomobject]@{ ExitCode = -1; Output = ''; Ran = $false }
+    } finally {
+        try { $process.Dispose() } catch { }
     }
-    $text = ''
-    foreach ($file in @($stdout, $stderr)) {
-        if (Test-Path -LiteralPath $file) {
-            $content = Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue
-            if ($content) { $text = $text + $content }
-            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
-        }
-    }
+
     foreach ($line in ($text -split "`r?`n")) {
         if ($line.Trim()) { Write-Log ('    ' + $line.TrimEnd()) }
     }
-    return [pscustomobject]@{ ExitCode = $exitCode; Output = $text }
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = $text; Ran = $ran }
 }
 
 # ============================================================================
@@ -899,7 +939,8 @@ function Step-Merge {
     if (-not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
     $arguments = @('-Merge', (Quote-Argument $State.MergeDir), '-Json', '-OutDir', (Quote-Argument $outDir))
     $result = Invoke-ChildScript -ScriptName 'Test-AedtCluster.ps1' -Arguments $arguments -TimeoutSeconds 300
-    if ($result.ExitCode -lt 0) { return @{ Status = 'Fail'; Detail = '彙整未能執行' } }
+    if (-not $result.Ran) { return @{ Status = 'Fail'; Detail = '彙整未能執行（子程序沒有啟動）' } }
+    if (Test-ExitCodeFailed $result.ExitCode) { return @{ Status = 'Fail'; Detail = '彙整未能執行' } }
     if ($result.ExitCode -ge 2) { return @{ Status = 'Warn'; Detail = '彙整發現【確定】等級不一致，見上方輸出' } }
     if ($result.ExitCode -eq 1) { return @{ Status = 'Warn'; Detail = '彙整有【可疑】項目' } }
     return @{ Status = 'Pass'; Detail = '兩台一致' }
@@ -928,13 +969,25 @@ function Step-Repair {
     Write-Log '    啟動並驗證 Electromagnetics RSM 與 Intel Hydra'
     Write-Log '    建立只放行 LocalSubnet 的防火牆規則（不會關閉防火牆）'
     try {
-        $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $argLine `
-            -Verb RunAs -WindowStyle Hidden -PassThru
+        # 同樣不用 Start-Process -PassThru：它結束後給不出離開碼。
+        # 這一支要提權，所以 UseShellExecute 必須是 true，也因此不能轉向輸出；
+        # 結果由 Repair-AedtClusterNode.ps1 自己寫進報告資料夾。
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName        = (Join-Path $PSHOME 'powershell.exe')
+        $info.Arguments       = $argLine
+        $info.UseShellExecute = $true
+        $info.Verb            = 'runas'
+        $info.WindowStyle     = 'Hidden'
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $info
+        if (-not $process.Start()) { throw '無法啟動提權程序。' }
         while (-not $process.HasExited) {
             [Windows.Forms.Application]::DoEvents()
             Start-Sleep -Milliseconds 200
         }
-        $code = $process.ExitCode
+        [void]$process.WaitForExit(5000)
+        $code = [int]$process.ExitCode
+        $process.Dispose()
     } catch {
         Write-Log ('  提權失敗或使用者取消：' + $_.Exception.Message)
         return @{ Status = 'Fail'; Detail = '未取得系統管理員權限' }
@@ -956,12 +1009,21 @@ function Step-MpiCredential {
     $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' + (Quote-Argument $scriptPath) +
                ' -Peer ' + (Quote-Argument $State.Peer)
     try {
-        $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $argLine -PassThru
+        # 要讓 Intel MPI 自己的視窗看得見，所以 UseShellExecute 為 true、不轉向輸出。
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName        = (Join-Path $PSHOME 'powershell.exe')
+        $info.Arguments       = $argLine
+        $info.UseShellExecute = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $info
+        if (-not $process.Start()) { throw '無法啟動帳密註冊程序。' }
         while (-not $process.HasExited) {
             [Windows.Forms.Application]::DoEvents()
             Start-Sleep -Milliseconds 200
         }
-        $code = $process.ExitCode
+        [void]$process.WaitForExit(5000)
+        $code = [int]$process.ExitCode
+        $process.Dispose()
     } catch {
         return @{ Status = 'Fail'; Detail = ('無法啟動帳密註冊：' + $_.Exception.Message) }
     }
@@ -993,7 +1055,8 @@ function Step-BuildConfig {
     $arguments = @('-From', (Quote-Argument $State.MergeDir), '-OutDir', (Quote-Argument $configOut))
     if ($State.ProjectPath) { $arguments += @('-Project', (Quote-Argument $State.ProjectPath)) }
     $result = Invoke-ChildScript -ScriptName 'New-AedtClusterConfig.ps1' -Arguments $arguments -TimeoutSeconds 180
-    if ($result.ExitCode -lt 0) { return @{ Status = 'Fail'; Detail = '設定產生失敗' } }
+    if (-not $result.Ran) { return @{ Status = 'Fail'; Detail = '設定產生失敗（子程序沒有啟動）' } }
+    if (Test-ExitCodeFailed $result.ExitCode) { return @{ Status = 'Fail'; Detail = '設定產生失敗' } }
     if ($result.ExitCode -eq 3) {
         # 離開碼 3 = 有節點報告讀不到。機器清單還是會產生，但可能少一台，
         # 而少一台的清單看起來完全正常——所以這裡不能報成功。
